@@ -1,0 +1,8 @@
+# Story Studio Settings
+
+ollama_host: "http://localhost:11434"
+main_model: "qwen3.6-35b:latest"
+light_model: "qwen2.5:7b"
+max_rounds: 20
+knowledge_dir: ""
+output_dir: ""
