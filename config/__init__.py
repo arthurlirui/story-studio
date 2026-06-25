@@ -23,17 +23,25 @@ class AgentConfig:
 
 @dataclass
 class StudioConfig:
-    ollama_host: str = "http://localhost:11434"
+    # Backend selection
+    backend: str = "ollama"  # "ollama" or "volcengine"
+    # Volcengine API
+    volcengine_base_url: str = "https://ark.cn-beijing.volces.com/api/coding/v3"
+    volcengine_api_key: str = ""
     main_model: str = "qwen3.6-35b:latest"
     light_model: str = "qwen2.5:7b"
+    # Ollama
+    ollama_host: str = "http://localhost:11434"
+    # Paths
     knowledge_dir: str = ""
     output_dir: str = ""
     agents: dict[str, AgentConfig] = field(default_factory=dict)
     max_rounds: int = 20
+    scene_writers: int = 3  # 并行写作的编剧数量
 
 
 def load_config(config_dir: str | Path = "") -> StudioConfig:
-    config_dir = Path(config_dir) if config_dir else Path(__file__).parent / "config"
+    config_dir = Path(config_dir) if config_dir else Path(__file__).parent
     config_file = config_dir / "settings.yaml"
 
     cfg = StudioConfig(
@@ -45,10 +53,14 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
         with open(config_file) as f:
             data = yaml.safe_load(f) or {}
 
-        cfg.ollama_host = data.get("ollama_host", cfg.ollama_host)
+        cfg.backend = data.get("backend", cfg.backend)
+        cfg.volcengine_base_url = data.get("volcengine_base_url", cfg.volcengine_base_url)
+        cfg.volcengine_api_key = data.get("volcengine_api_key", cfg.volcengine_api_key)
         cfg.main_model = data.get("main_model", cfg.main_model)
         cfg.light_model = data.get("light_model", cfg.light_model)
+        cfg.ollama_host = data.get("ollama_host", cfg.ollama_host)
         cfg.max_rounds = data.get("max_rounds", cfg.max_rounds)
+        cfg.scene_writers = data.get("scene_writers", cfg.scene_writers)
 
         if "knowledge_dir" in data:
             cfg.knowledge_dir = data["knowledge_dir"]

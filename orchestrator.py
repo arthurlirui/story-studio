@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -13,11 +14,12 @@ from typing import Any, Callable
 
 from config import StudioConfig, load_config
 from agents import (
-    OllamaClient, Showrunner, WorldArchitect, CharacterDesigner,
+    OllamaClient, VolcengineClient, Showrunner, WorldArchitect, CharacterDesigner,
     SceneWriter, Editor, LiteraryAdvisor, ContinuityKeeper,
     KnowledgeStore,
 )
-from agents.ollama_client import client as default_client
+from agents.ollama_client import client as ollama_client
+from agents.volcengine_client import client as volcengine_client
 
 logger = logging.getLogger(__name__)
 
@@ -38,15 +40,15 @@ class StoryOrchestrator:
     def __init__(
         self,
         config: StudioConfig | None = None,
-        client: OllamaClient | None = None,
+        client: Any = None,
     ):
         self.cfg = config or load_config()
-        self.client = client or default_client
+        self.client = client or volcengine_client
 
-        # Knoweldge store
+        # Knowledge store
         self.knowledge = KnowledgeStore(self.cfg.knowledge_dir)
 
-        # Create agents
+        # Create agents — all use Volcengine API
         self.showrunner = Showrunner(
             "总策划", "Showrunner", "主持创作流程, 分配任务, 评审产出",
             self.client, model=self.cfg.main_model, temperature=0.6,
@@ -59,10 +61,14 @@ class StoryOrchestrator:
             "角色设计师", "Character Designer", "创建角色档案",
             self.client, model=self.cfg.main_model, temperature=0.8,
         )
-        self.scene_writer = SceneWriter(
-            "场景编剧", "Scene Writer", "核心写作",
-            self.client, model=self.cfg.main_model, temperature=0.9, max_tokens=8192,
-        )
+        # Multiple Scene Writers for parallel chapter writing
+        self.scene_writers: list[SceneWriter] = []
+        for i in range(self.cfg.scene_writers):
+            sw = SceneWriter(
+                f"场景编剧{i + 1}", "Scene Writer", f"核心写作 #{i + 1}",
+                self.client, model=self.cfg.main_model, temperature=0.9, max_tokens=8192,
+            )
+            self.scene_writers.append(sw)
         self.editor = Editor(
             "编辑", "Editor", "文字润色",
             self.client, model=self.cfg.main_model, temperature=0.5,
@@ -80,11 +86,13 @@ class StoryOrchestrator:
             "showrunner": self.showrunner,
             "world_architect": self.world_architect,
             "character_designer": self.character_designer,
-            "scene_writer": self.scene_writer,
             "editor": self.editor,
             "literary_advisor": self.literary_advisor,
             "continuity_keeper": self.continuity_keeper,
         }
+        # Add scene writers individually
+        for i, sw in enumerate(self.scene_writers):
+            self.agents[f"scene_writer_{i + 1}"] = sw
 
         # Project state
         self.project_name: str = ""
@@ -92,6 +100,13 @@ class StoryOrchestrator:
         self.current_chapter: int = 0
         self.total_chapters: int = 0
         self.conversation_log: list[dict] = []
+        self._call_count: int = 0
+
+    async def _rate_limit_pause(self):
+        """在连续 API 调用之间插入延迟，避免触发限流."""
+        self._call_count += 1
+        if self._call_count > 1:
+            await asyncio.sleep(3.0)  # 3s between calls
 
     # ── Phase 1: 策划 ──────────────────────────────────────────
 
@@ -206,10 +221,10 @@ class StoryOrchestrator:
         self.knowledge.save_outline(final_outline)
         return final_outline
 
-    # ── Phase 4: 写作 ──────────────────────────────────────────
+    # ── Phase 4: 写作 (支持并行) ──────────────────────────────
 
     async def phase_writing(self, chapter_num: int | None = None) -> str:
-        """写作阶段: 写一章 → 润色 → 检查."""
+        """写作阶段: 写一章 → 润色 → 检查 (单章模式)."""
         self.phase = "writing"
 
         if chapter_num:
@@ -221,19 +236,19 @@ class StoryOrchestrator:
         context = self.knowledge.build_context(self.current_chapter)
         outline = self.knowledge.load_outline()
 
-        # Step 1: Write chapter
+        # Step 1: Write chapter (use first scene writer)
         scene_prompt = (
             f"请撰写第 {self.current_chapter} 章。\n\n"
             f"## 大纲内容\n"
         )
-        # Extract this chapter from outline
         chapter_outline = self._extract_chapter_outline(outline, self.current_chapter)
         if chapter_outline:
             scene_prompt += chapter_outline
         else:
             scene_prompt += f"第 {self.current_chapter} 章（根据上下文自然推进）"
 
-        chapter_text = await self.scene_writer.think(scene_prompt, context)
+        writer = self.scene_writers[0]
+        chapter_text = await writer.think(scene_prompt, context)
         self._log("scene_writer", f"Chapter {self.current_chapter}: {chapter_text[:100]}...")
         self.knowledge.save_chapter(self.current_chapter, chapter_text, "scene_writer")
 
@@ -261,11 +276,55 @@ class StoryOrchestrator:
         )
         self._log("showrunner", f"Review Ch{self.current_chapter}: {review[:200]}")
 
-        # Check if approved
         if "通过" in review or "✅" in review:
             return f"## 第 {self.current_chapter} 章 ✅ 通过\n\n{edited}"
         else:
             return f"## 第 {self.current_chapter} 章 🔄 需修订\n\n{review}\n\n---\n\n原稿:\n{chapter_text}"
+
+    async def phase_writing_parallel(
+        self, start_chapter: int, count: int
+    ) -> str:
+        """并行写作阶段: 多个 Scene Writer 同时写不同章节.
+
+        Args:
+            start_chapter: 起始章节号
+            count: 要写的章节数（最多 scene_writers 数量）
+        """
+        import asyncio
+
+        self.phase = "writing"
+        context = self.knowledge.build_context()
+        outline = self.knowledge.load_outline()
+
+        # Limit to available writers
+        writer_count = min(count, len(self.scene_writers))
+        chapter_nums = list(range(start_chapter, start_chapter + writer_count))
+
+        # Build prompts for each chapter
+        async def write_chapter(writer: SceneWriter, ch_num: int) -> tuple[int, str]:
+            ch_outline = self._extract_chapter_outline(outline, ch_num)
+            prompt = f"请撰写第 {ch_num} 章。\n\n## 大纲内容\n"
+            if ch_outline:
+                prompt += ch_outline
+            else:
+                prompt += f"第 {ch_num} 章（根据上下文自然推进）"
+            text = await writer.think(prompt, context)
+            return ch_num, text
+
+        # Parallel write
+        tasks = []
+        for i, ch_num in enumerate(chapter_nums):
+            tasks.append(write_chapter(self.scene_writers[i], ch_num))
+
+        results = await asyncio.gather(*tasks)
+
+        output_parts = []
+        for ch_num, text in results:
+            self._log("scene_writer", f"Chapter {ch_num}: {text[:100]}...")
+            self.knowledge.save_chapter(ch_num, text, "scene_writer")
+            output_parts.append(f"## 第 {ch_num} 章 (初稿)\n{text}")
+
+        return "\n\n---\n\n".join(output_parts)
 
     # ── Phase 5: 完稿 ──────────────────────────────────────────
 
@@ -373,5 +432,8 @@ class StoryOrchestrator:
             "characters": self.knowledge.list_characters(),
             "conversation_entries": len(self.conversation_log),
             "agents": [a.to_dict() for a in self.agents.values()],
+            "scene_writers": len(self.scene_writers),
             "current_chapter": self.current_chapter,
+            "model": self.cfg.main_model,
+            "light_model": self.cfg.light_model,
         }

@@ -1,0 +1,18 @@
+{
+  "title": "不被定义她的主场：单本书名",
+  "subtitle": "女子就是好",
+  "author": "Arthur 著",
+  "genre": "Chinese female-oriented empowerment novel, heroine-centered growth story",
+  "mood": "empowering, luminous, elegant, determined, hopeful",
+  "core_visual": "a confident heroine standing in her own arena, surrounded by symbolic tools of her profession, many eyes turning toward her, no male-gaze framing",
+  "composition": "portrait book cover, centered heroine, strong upward composition, title-safe empty space at top and bottom",
+  "palette": "warm gold, clear blue, soft crimson, ivory light",
+  "avoid": "no readable text, no fake letters, no watermark, no logo",
+  "positive_prompt": "Book cover, premium Chinese female empowerment novel cover artwork, heroine-centered growth story, a confident woman standing in her own arena, symbolic professional tools around her, many gazes turning toward her, elegant powerful atmosphere, luminous hopeful lighting, portrait book cover, title-safe empty space at top and bottom, high detail, professional publishing cover design, warm gold, clear blue, soft crimson and ivory color palette, no readable text, no fake letters, no watermark, no logo",
+  "seed": null,
+  "width": 768,
+  "height": 1152,
+  "steps": 20,
+  "title_layout": "vertical",
+  "lora_strength": 0.85
+}

@@ -6,3 +6,32 @@ knowledge/
 output/
 *.md~
 .DS_Store
+
+# Reference texts (copyrighted, large)
+data/
+
+# Generated novel content (project-specific, large)
+关河裂/
+关河裂_最终版_v2/
+刘裕传/
+刘裕传_backup_*/
+刘裕传_polish_backup_*/
+学术圈精神病人/
+康斯坦茨之恋/
+玉璧之战/
+螺蛳粉/
+her_throne/
+dir1_psych/
+
+# Generated output
+daily_novels/output/
+daily_novels/__pycache__/
+story/chapters/
+story/revisions/
+
+# Junk/error files
+characters/_think_.md
+characters/_Volcengine_API_error__None_.md
+
+# OpenClaw internal
+.openclaw/

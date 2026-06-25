@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import load_config
 from orchestrator import StoryOrchestrator
-from agents.ollama_client import client
+from agents.volcengine_client import init_client
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,7 +33,7 @@ def banner():
     print("""
 ╔══════════════════════════════════════════════════╗
 ║   🎭 Story Studio — 小说剧本创作智能体团队       ║
-║   本地模型驱动 · 多 Agent 协作 · 零数据外泄       ║
+║   火山引擎 API · 多 Agent 协作 · 3 编剧并行       ║
 ╚══════════════════════════════════════════════════╝
 """)
 
@@ -82,7 +82,7 @@ async def main_interactive(orchestrator: StoryOrchestrator):
     banner()
     help_text()
 
-    print(f"🧠 Ollama 模型: {orchestrator.cfg.main_model} (主力) / {orchestrator.cfg.light_model} (轻量)")
+    print(f"🧠 火山引擎模型: {orchestrator.cfg.main_model} (主力) / {orchestrator.cfg.light_model} (轻量)")
     print(f"📂 知识库: {orchestrator.cfg.knowledge_dir}")
     print()
 
@@ -213,7 +213,7 @@ async def main_interactive(orchestrator: StoryOrchestrator):
             if not content:
                 print(f"第 {ch} 章不存在")
                 continue
-            revised = await orchestrator.scene_writer.think(
+            revised = await orchestrator.scene_writers[0].think(
                 f"请根据以下指令修改第 {ch} 章。\n\n指令: {instruction}\n\n原文:\n{content}",
                 context,
             )
@@ -252,23 +252,21 @@ async def main_interactive(orchestrator: StoryOrchestrator):
 
 async def main():
     cfg = load_config()
-    orchestrator = StoryOrchestrator(cfg)
 
-    # Check Ollama health
-    healthy = await client.check_health()
+    # Init Volcengine client
+    vc = init_client(cfg.volcengine_base_url, cfg.volcengine_api_key, cfg.main_model)
+    orchestrator = StoryOrchestrator(cfg, client=vc)
+
+    # Check API health
+    healthy = await vc.check_health()
     if not healthy:
-        print("❌ Ollama 服务未运行！请先启动: ollama serve")
-        print(f"   模型: {cfg.main_model} / {cfg.light_model}")
-        sys.exit(1)
-
-    models = await client.list_models()
-    model_names = [m["name"] for m in models]
-    print(f"✅ Ollama 已连接，可用模型: {', '.join(model_names)}")
-
-    # Check required models
-    for m in [cfg.main_model, cfg.light_model]:
-        if m not in model_names:
-            print(f"⚠️  模型 '{m}' 未安装，可用: ollama pull {m}")
+        print("⚠️  火山引擎 API 连接异常，但将继续运行...")
+    else:
+        print(f"✅ 火山引擎 API 已连接")
+        models = await vc.list_models()
+        if models:
+            model_ids = [m["id"] for m in models[:10]]
+            print(f"   可用模型: {', '.join(model_ids)}")
 
     # Quick command mode
     if len(sys.argv) > 1:

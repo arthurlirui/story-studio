@@ -1,0 +1,54 @@
+{
+  "series": "不被定义她的主场",
+  "title": "待定书名",
+  "mode": "modern | historical | era | fantasy | wasteland | infinite",
+  "definition": "D01-D07 或组合，例如 D01+D04",
+  "core_statement": "本书不被定义的核心立意",
+  "logline": "女主被某种标签定义，却通过能力、行动和选择建立自己的主场。",
+  "target_audience": "女频读者，偏好女性成长、女性力量、职业爽、群像互助、身份反转",
+  "tone": "女本位、强共情、强爽点、专业成长、立意明确但不说教",
+  "heroine": {
+    "name": "女主名",
+    "archetype": "H01-H06",
+    "initial_label": "世界给她贴的标签",
+    "visible_goal": "开篇主动目标",
+    "hidden_wound": "隐性旧伤或心理困境",
+    "skill_or_power": "专业能力/金手指/方法论",
+    "main_arena": "主场：车间/女学/律所/基地/宗门等",
+    "growth_path": "从被定义到自我定义的路径"
+  },
+  "antagonist_system": {
+    "system_name": "压迫结构名称",
+    "representatives": ["代表人物1", "代表人物2"],
+    "definition_imposed": "他们如何定义女主",
+    "resources_controlled": "他们控制的资源",
+    "eventual_defeat": "旧定义如何失效"
+  },
+  "female_relationships": {
+    "mentor": "前辈女性，可为空",
+    "peer_ally": "同辈盟友，可为空",
+    "younger_follower": "后辈追随者，可为空",
+    "female_antagonist": "女性反派或既得利益者，可为空"
+  },
+  "love_line": {
+    "enabled": false,
+    "role": "盟友/爱人/对手/无",
+    "rule": "爱情不得定义女主价值"
+  },
+  "conflict_engine": "CE01-CE06",
+  "ending": "career_ascension | freedom_life | collective_change | power_rebuild | relationship_rebuild",
+  "volume_plan": [
+    "卷一：标签压顶",
+    "卷二：能力成形",
+    "卷三：规则碰撞",
+    "卷四：主场建立"
+  ],
+  "opening_hook": "第一章钩子",
+  "cover_direction": "封面核心视觉与情绪",
+  "forbidden_moves": [
+    "不让女主成为男主工具人",
+    "不让爱情成为价值证明",
+    "不脸谱化女性反派",
+    "不空喊独立口号，要用行动体现"
+  ]
+}

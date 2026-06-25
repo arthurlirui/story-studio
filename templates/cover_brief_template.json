@@ -1,0 +1,18 @@
+{
+  "title": "书名",
+  "subtitle": "副标题或类型卖点，可为空",
+  "author": "Arthur 著",
+  "genre": "作品类型，例如 Chinese historical war fiction / social suspense thriller / contemporary coming-of-age fiction",
+  "mood": "情绪关键词，例如 solemn, epic, tragic, heroic",
+  "core_visual": "一个核心视觉，不要堆砌：例如 Yellow River frontier fortress under siege, ancient cavalry silhouettes, torn banners",
+  "composition": "portrait book cover, centered composition, title-safe empty space at top and bottom",
+  "palette": "色彩方案，例如 deep bronze, ink black, muted gold, dark red",
+  "avoid": "no readable text, no fake letters, no watermark, no logo",
+  "positive_prompt": "Book cover, premium novel cover artwork, ... no readable text, no fake letters, no watermark, no logo",
+  "seed": null,
+  "width": 768,
+  "height": 1152,
+  "steps": 20,
+  "title_layout": "vertical",
+  "lora_strength": 0.85
+}

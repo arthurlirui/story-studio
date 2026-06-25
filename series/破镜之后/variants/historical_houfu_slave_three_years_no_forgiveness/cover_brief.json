@@ -1,0 +1,18 @@
+{
+  "title": "为奴三年后，整个侯府跪求我原谅",
+  "subtitle": "古言 · 绝不原谅",
+  "author": "Arthur 著",
+  "genre": "Chinese female-oriented romance novel, second-chance romance or no-forgiveness revenge",
+  "mood": "emotional, elegant, restrained, painful, empowering",
+  "core_visual": "a solitary elegant woman standing in rain-lit city street / palace gate / moonlit fantasy ruins, broken mirror motif, distant male silhouette behind her",
+  "composition": "portrait book cover, centered heroine silhouette, broken mirror fragments as symbolic frame, title-safe empty space at top and bottom",
+  "palette": "deep blue, muted gold, rain gray, soft crimson accent",
+  "avoid": "no readable text, no fake letters, no watermark, no logo",
+  "positive_prompt": "Book cover, premium Chinese 古言 female romance novel cover artwork, emotional second-chance romance and revenge atmosphere, solitary elegant heroine silhouette standing before broken mirror fragments, distant male silhouette behind her, restrained painful mood, cinematic lighting, portrait book cover, title-safe empty space at top and bottom, high detail, professional publishing cover design, deep blue, muted gold, rain gray and soft crimson palette, no readable text, no fake letters, no watermark, no logo",
+  "seed": null,
+  "width": 768,
+  "height": 1152,
+  "steps": 20,
+  "title_layout": "vertical",
+  "lora_strength": 0.85
+}

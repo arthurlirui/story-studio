@@ -1,0 +1,57 @@
+{
+  "series": "不被定义她的主场",
+  "title": "我在废土世界扫垃圾",
+  "mode": "wasteland",
+  "definition": "D02+D04",
+  "core_statement": "废土清洁工不被低贱职业定义，用污染治理重建一座适合女性生存的城",
+  "logline": "废土长篇。女主被'清洁工只配处理脏活'定义，却以'废土清洁工不被低贱职业定义，用污染治理重建一座适合女性生存的城'为主线，建立自己的主场。",
+  "target_audience": "女频读者，偏好女性成长、女性力量、职业爽、群像互助、身份反转",
+  "tone": "女本位、强共情、强爽点、专业成长、立意明确但不说教",
+  "heroine": {
+    "name": "祝余",
+    "archetype": "H06",
+    "initial_label": "清洁工只配处理脏活",
+    "visible_goal": "查清污染源并救下被放弃的污染区",
+    "hidden_wound": "隐性旧伤或心理困境",
+    "skill_or_power": "污染分类、废物修复、基层组织能力",
+    "main_arena": "第九污染区清洁站",
+    "growth_path": "从被定义到自我定义的路径"
+  },
+  "antagonist_system": {
+    "system_name": "基地资源等级与污染歧视系统",
+    "representatives": [
+      "代表人物1",
+      "代表人物2"
+    ],
+    "definition_imposed": "清洁工只配处理脏活",
+    "resources_controlled": "他们控制的资源",
+    "eventual_defeat": "旧定义如何失效"
+  },
+  "female_relationships": {
+    "mentor": "前辈女性，可为空",
+    "peer_ally": "同辈盟友，可为空",
+    "younger_follower": "后辈追随者，可为空",
+    "female_antagonist": "女性反派或既得利益者，可为空"
+  },
+  "love_line": {
+    "enabled": false,
+    "role": "盟友/爱人/对手/无",
+    "rule": "爱情不得定义女主价值"
+  },
+  "conflict_engine": "CE06",
+  "ending": "power_rebuild",
+  "volume_plan": [
+    "卷一：标签压顶",
+    "卷二：能力成形",
+    "卷三：规则碰撞",
+    "卷四：主场建立"
+  ],
+  "opening_hook": "所有人都认为她不该站上这个位置，她偏偏第一个解决了问题。",
+  "cover_direction": "女主站在自己的主场中央，所有目光向她汇聚",
+  "forbidden_moves": [
+    "不让女主成为男主工具人",
+    "不让爱情成为价值证明",
+    "不脸谱化女性反派",
+    "不空喊独立口号，要用行动体现"
+  ]
+}
