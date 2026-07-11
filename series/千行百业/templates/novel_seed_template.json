@@ -1,0 +1,37 @@
+{
+  "series": "千行百业",
+  "title": "",
+  "slug": "",
+  "profession": "",
+  "city": "",
+  "era": "当代",
+  "length": "short",
+  "core_conflict": "",
+  "one_line": "",
+  "protagonist": {
+    "name": "",
+    "age": 0,
+    "profession": "",
+    "years_in_field": 0,
+    "reason_for_choosing": "",
+    "professional_belief": "",
+    "professional_dilemma": "",
+    "personality": [],
+    "flaw": "",
+    "romantic_status": "",
+    "romantic_dilemma": ""
+  },
+  "male_lead": {
+    "name": "",
+    "age": 0,
+    "profession": "",
+    "relationship_to_protagonist": "",
+    "professional_charm": "",
+    "conflict_with_protagonist": ""
+  },
+  "ending": {
+    "professional_ending": "",
+    "romantic_ending": ""
+  },
+  "chapters": []
+}
