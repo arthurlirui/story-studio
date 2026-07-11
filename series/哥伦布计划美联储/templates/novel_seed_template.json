@@ -1,0 +1,39 @@
+{
+  "series": "哥伦布计划美联储",
+  "title": "",
+  "slug": "",
+  "era": "1910",
+  "family": "",
+  "length": "short",
+  "core_conflict": "",
+  "one_line": "",
+  "protagonist": {
+    "name": "",
+    "age": 0,
+    "family": "",
+    "role": "",
+    "financial_specialty": "",
+    "financial_belief": "",
+    "family_secret": "",
+    "personality": [],
+    "flaw": "",
+    "romantic_status": "",
+    "romantic_dilemma": ""
+  },
+  "male_lead": {
+    "name": "",
+    "age": 0,
+    "family": "",
+    "role": "",
+    "relationship_to_protagonist": "",
+    "financial_charm": "",
+    "conflict_with_protagonist": ""
+  },
+  "antagonist_family": "",
+  "historical_anchor": "",
+  "ending": {
+    "financial_ending": "",
+    "family_ending": "",
+    "romantic_ending": ""
+  }
+}
