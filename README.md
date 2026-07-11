@@ -117,6 +117,8 @@ Story Studio 已集成本地 ComfyUI 封面生成能力：
 ```text
 skills/book-cover-generation/SKILL.md
 skills/book-cover-generation/README_INTEGRATION.md
+skills/ancient-social-drama/SKILL.md
+skills/ancient-tragic-romance/SKILL.md
 tools/book_cover_comfy.py
 templates/comfy/book_cover_flux2_klein_with_chinese_text_api.json
 ```
@@ -185,10 +187,12 @@ story-studio/
 ├── config/               # ⚙️ 配置
 │   ├── __init__.py
 │   └── settings.yaml
-├── knowledge/            # 📚 知识库 (自动生成)
+├── knowledge/            # 📚 知识库
 │   ├── world/            #    世界观文档
 │   ├── characters/       #    角色档案
-│   └── story/            #    故事进度
+│   ├── story/            #    故事进度
+│   ├── ancient-social-drama/  # 古风世情世界观
+│   └── ancient-tragic-romance/  # 古文虐恋世界观
 │       ├── outline.md
 │       ├── chapters/     #    章节
 │       └── revisions/    #    修订记录
