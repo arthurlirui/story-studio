@@ -119,6 +119,7 @@ skills/book-cover-generation/SKILL.md
 skills/book-cover-generation/README_INTEGRATION.md
 skills/ancient-social-drama/SKILL.md
 skills/ancient-tragic-romance/SKILL.md
+skills/mind-bending-shorts/SKILL.md   # 脑洞类短故事避坑指南（番茄作家课堂第29期）
 tools/book_cover_comfy.py
 templates/comfy/book_cover_flux2_klein_with_chinese_text_api.json
 ```
