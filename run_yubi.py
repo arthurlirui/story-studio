@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import load_config
-from agents.volcengine_client import init_client as init_volcengine
+from agents.llm_client import init_client as init_llm
 from agents.ollama_client import client as ollama_client
 from orchestrator import StoryOrchestrator
 

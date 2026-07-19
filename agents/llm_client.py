@@ -24,7 +24,7 @@ MAX_DELAY = 120.0
 DEFAULT_TIMEOUT = 300.0
 
 
-class VolcengineClient:
+class LLMClient:
     """OpenAI-compatible API client with reasoning + streaming support."""
 
     def __init__(
@@ -260,11 +260,11 @@ class VolcengineClient:
             return []
 
 
-client: VolcengineClient | None = None
+client: LLMClient | None = None
 
 
-def init_client(base_url: str, api_key: str, default_model: str = "DeepSeek-V4-Pro") -> VolcengineClient:
+def init_client(base_url: str, api_key: str, default_model: str = "DeepSeek-V4-Pro") -> LLMClient:
     """Initialize global client."""
     global client
-    client = VolcengineClient(base_url=base_url, api_key=api_key, default_model=default_model)
+    client = LLMClient(base_url=base_url, api_key=api_key, default_model=default_model)
     return client

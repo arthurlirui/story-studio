@@ -19,7 +19,7 @@ from agents import (
     KnowledgeStore,
 )
 from agents.ollama_client import client as ollama_client
-from agents.volcengine_client import client as volcengine_client
+from agents.llm_client import client as llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ class StoryOrchestrator:
         client: Any = None,
     ):
         self.cfg = config or load_config()
-        self.client = client or volcengine_client
+        self.client = client or llm_client
 
         # Knowledge store (two-tier: series + variant)
         self.knowledge = KnowledgeStore(

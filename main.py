@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import load_config
 from orchestrator import StoryOrchestrator
-from agents.volcengine_client import init_client
+from agents.llm_client import init_client
 
 logging.basicConfig(
     level=logging.INFO,

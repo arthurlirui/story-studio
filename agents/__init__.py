@@ -13,7 +13,7 @@ from agents.title_designer import TitleDesigner
 from agents.hooker import Hooker
 from agents.climax_designer import ClimaxDesigner
 from agents.ollama_client import OllamaClient, client as ollama_client
-from agents.volcengine_client import VolcengineClient, init_client as init_volcengine_client
+from agents.llm_client import LLMClient, init_client as init_llm_client
 from agents.knowledge import KnowledgeStore, create_knowledge_store
 
 __all__ = [
@@ -29,6 +29,6 @@ __all__ = [
     "Hooker",
     "ClimaxDesigner",
     "OllamaClient", "ollama_client",
-    "VolcengineClient", "init_volcengine_client",
+    "LLMClient", "init_llm_client",
     "KnowledgeStore", "create_knowledge_store",
 ]
