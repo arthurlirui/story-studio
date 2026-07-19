@@ -51,8 +51,10 @@ class OllamaClient:
                 return data["message"]["content"]
 
         except httpx.TimeoutException:
-            logger.warning("Ollama timeout, retrying with shorter response...")
-            payload["options"]["num_predict"] = min(max_tokens, 2048)
+            # 超时：将 num_predict 减半后重试（下限 512）
+            new_max = max(max_tokens // 2, 512)
+            logger.warning("Ollama timeout, retrying with num_predict %d→%d", max_tokens, new_max)
+            payload["options"]["num_predict"] = new_max
             async with httpx.AsyncClient(timeout=180.0) as client:
                 resp = await client.post(f"{self.base_url}/api/chat", json=payload)
                 resp.raise_for_status()
@@ -61,7 +63,7 @@ class OllamaClient:
 
         except Exception as e:
             logger.error("Ollama error: %s", e)
-            return f"[Ollama error: {e}]"
+            return f"[LLM API error: Ollama: {e}]"
 
     async def generate(
         self,

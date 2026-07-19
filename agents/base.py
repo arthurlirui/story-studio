@@ -8,16 +8,14 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
-from typing import Any as _Any
-
 logger = logging.getLogger(__name__)
 
 
 class Agent(ABC):
     """Agent 基类.
 
-    client 可以是 OllamaClient 或 VolcengineClient，
-    只要实现了 chat(messages, model, temperature, max_tokens) -> str 接口即可。
+    client 可以是 OllamaClient 或 LLMClient，
+    只要实现了 chat(messages, model, temperature, max_tokens, system) -> str 接口即可。
     """
 
     def __init__(
@@ -25,7 +23,7 @@ class Agent(ABC):
         name: str,
         role: str,
         description: str,
-        client: _Any,
+        client: Any,
         model: str = "ark-code-latest",
         temperature: float = 0.7,
         max_tokens: int = 4096,
@@ -63,6 +61,7 @@ class Agent(ABC):
             model=self.model,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
+            system=system,
         )
 
         self._conversation_history.append({"role": "user", "content": prompt})

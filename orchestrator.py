@@ -6,19 +6,19 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from config import StudioConfig, load_config
 from agents import (
-    OllamaClient, LLMClient, Showrunner, WorldArchitect, CharacterDesigner,
+    Showrunner, WorldArchitect, CharacterDesigner,
     SceneWriter, Editor, LiteraryAdvisor, ContinuityKeeper,
+    TitleDesigner, Hooker, ClimaxDesigner,
     KnowledgeStore,
 )
-from agents.ollama_client import client as ollama_client
 from agents.llm_client import client as llm_client
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,11 @@ class StoryOrchestrator:
     ):
         self.cfg = config or load_config()
         self.client = client or llm_client
+        if self.client is None:
+            raise RuntimeError(
+                "LLM client 未初始化。请先调用 agents.llm_client.init_client()，"
+                "或在构造 StoryOrchestrator 时传入 client 参数。"
+            )
 
         # Knowledge store (two-tier: series + variant)
         self.knowledge = KnowledgeStore(
@@ -64,9 +69,10 @@ class StoryOrchestrator:
             "角色设计师", "Character Designer", "创建角色档案",
             self.client, model=self.cfg.main_model, temperature=0.8,
         )
-        # Multiple Scene Writers for parallel chapter writing
+        # Multiple Scene Writers for parallel chapter writing (at least 1)
         self.scene_writers: list[SceneWriter] = []
-        for i in range(self.cfg.scene_writers):
+        writer_count = max(1, self.cfg.scene_writers)
+        for i in range(writer_count):
             sw = SceneWriter(
                 f"场景编剧{i + 1}", "Scene Writer", f"核心写作 #{i + 1}",
                 self.client, model=self.cfg.main_model, temperature=0.9, max_tokens=8192,
@@ -84,6 +90,19 @@ class StoryOrchestrator:
             "连续性检查员", "Continuity Keeper", "一致性检查",
             self.client, model=self.cfg.main_model, temperature=0.4,
         )
+        # Specialist designers (网文标题/钩子/爽点)
+        self.title_designer = TitleDesigner(
+            "标题设计师", "Title Designer", "设计书名/章节标题",
+            self.client, model=self.cfg.main_model, temperature=0.8,
+        )
+        self.hooker = Hooker(
+            "钩子设计师", "Hooker", "设计章节钩子",
+            self.client, model=self.cfg.main_model, temperature=0.8,
+        )
+        self.climax_designer = ClimaxDesigner(
+            "爽点设计师", "Climax Designer", "设计爽点与高潮",
+            self.client, model=self.cfg.main_model, temperature=0.8,
+        )
 
         self.agents = {
             "showrunner": self.showrunner,
@@ -92,6 +111,9 @@ class StoryOrchestrator:
             "editor": self.editor,
             "literary_advisor": self.literary_advisor,
             "continuity_keeper": self.continuity_keeper,
+            "title_designer": self.title_designer,
+            "hooker": self.hooker,
+            "climax_designer": self.climax_designer,
         }
         # Add scene writers individually
         for i, sw in enumerate(self.scene_writers):
@@ -186,9 +208,17 @@ class StoryOrchestrator:
 
     # ── Phase 3: 大纲 ──────────────────────────────────────────
 
-    async def phase_outlining(self, total_chapters: int = 10) -> str:
-        """大纲阶段: 生成章节大纲."""
+    async def phase_outlining(self, total_chapters: int | None = None) -> str:
+        """大纲阶段: 生成章节大纲.
+
+        若未显式指定章节数，尝试从企划书中解析"建议章节数"；
+        解析失败则默认 10 章。
+        """
         self.phase = "outlining"
+
+        if total_chapters is None:
+            plan = self.knowledge.load_world("plan")
+            total_chapters = self._parse_suggested_chapters(plan) or 10
         self.total_chapters = total_chapters
 
         context = self.knowledge.build_context()
@@ -206,17 +236,43 @@ class StoryOrchestrator:
         )
         self._log("showrunner", outline)
 
+        # 专家设计：标题 / 钩子 / 爽点（三位专家依次优化大纲）
+        await self._rate_limit_pause()
+        title_advice = await self.title_designer.think(
+            f"请为以下章节大纲设计更吸引点击的章节标题（保持章号不变，只优化标题）。\n\n{outline}",
+            context,
+        )
+        self._log("title_designer", title_advice)
+
+        await self._rate_limit_pause()
+        hook_advice = await self.hooker.think(
+            f"请为以下章节大纲的每一章设计章末钩子方案，并指出哪些章缺少有效钩子。\n\n{outline}",
+            context,
+        )
+        self._log("hooker", hook_advice)
+
+        await self._rate_limit_pause()
+        climax_advice = await self.climax_designer.think(
+            f"请审视以下章节大纲的爽点/高潮分布，指出爽点不足的章节并给出强化建议。\n\n{outline}",
+            context,
+        )
+        self._log("climax_designer", climax_advice)
+
         # Literary advisor review
+        await self._rate_limit_pause()
         lit_advice = await self.literary_advisor.think(
             "请分析以下章节大纲，给出结构建议。\n\n" + outline,
             context,
         )
         self._log("literary_advisor", lit_advice)
 
-        # Final outline
+        # Final outline — 综合三位设计师 + 文学顾问的建议
         final_outline = await self.showrunner.think(
-            f"结合文学顾问的建议，输出最终版章节大纲。\n\n"
+            f"结合以下专家建议，输出最终版章节大纲（含优化后的章节标题、钩子、爽点安排）。\n\n"
             f"初始大纲:\n{outline}\n\n"
+            f"标题设计建议:\n{title_advice}\n\n"
+            f"钩子设计建议:\n{hook_advice}\n\n"
+            f"爽点设计建议:\n{climax_advice}\n\n"
             f"文学建议:\n{lit_advice}"
         )
         self._log("showrunner", final_outline)
@@ -251,19 +307,26 @@ class StoryOrchestrator:
             scene_prompt += f"第 {self.current_chapter} 章（根据上下文自然推进）"
 
         writer = self.scene_writers[0]
+        await self._rate_limit_pause()
         chapter_text = await writer.think(scene_prompt, context)
+        if not chapter_text or chapter_text.startswith("[LLM API error"):
+            return f"## 第 {self.current_chapter} 章 ❌ 写作失败\n\n{chapter_text}"
         self._log("scene_writer", f"Chapter {self.current_chapter}: {chapter_text[:100]}...")
         self.knowledge.save_chapter(self.current_chapter, chapter_text, "scene_writer")
 
         # Step 2: Editor polish
+        await self._rate_limit_pause()
         edited = await self.editor.think(
             f"请润色第 {self.current_chapter} 章。保留所有内容, 只优化表达。\n\n" + chapter_text,
             context,
         )
+        if not edited or edited.startswith("[LLM API error"):
+            edited = chapter_text  # 润色失败时退回原稿
         self._log("editor", edited[:200])
         self.knowledge.save_chapter(self.current_chapter, edited, "editor")
 
         # Step 3: Continuity check
+        await self._rate_limit_pause()
         continuity = await self.continuity_keeper.think(
             f"请检查第 {self.current_chapter} 章的一致性。\n\n" + edited,
             context,
@@ -271,18 +334,56 @@ class StoryOrchestrator:
         self._log("continuity_keeper", continuity)
         self.knowledge.save_continuity_log(continuity)
 
-        # Step 4: Showrunner review
+        # Step 4: Showrunner review — 要求首行输出结构化 VERDICT
+        await self._rate_limit_pause()
         review = await self.showrunner.think(
             f"请评审第 {self.current_chapter} 章。\n\n"
             f"## 编辑后版本\n{edited[:3000]}\n\n"
-            f"## 连续性检查\n{continuity[:1000]}",
+            f"## 连续性检查\n{continuity[:1000]}\n\n"
+            f"## 输出格式（必须严格遵守）\n"
+            f"第一行必须是 `VERDICT: PASS` 或 `VERDICT: REVISE` 或 `VERDICT: REJECT`，"
+            f"之后空一行再写评审意见。PASS=通过；REVISE=需修订；REJECT=严重偏离需重写。",
         )
         self._log("showrunner", f"Review Ch{self.current_chapter}: {review[:200]}")
 
-        if "通过" in review or "✅" in review:
+        verdict = self._parse_review_verdict(review)
+        if verdict == "PASS":
             return f"## 第 {self.current_chapter} 章 ✅ 通过\n\n{edited}"
+        elif verdict == "REJECT":
+            return f"## 第 {self.current_chapter} 章 ❌ 退回重写\n\n{review}\n\n---\n\n原稿:\n{chapter_text}"
         else:
             return f"## 第 {self.current_chapter} 章 🔄 需修订\n\n{review}\n\n---\n\n原稿:\n{chapter_text}"
+
+    @staticmethod
+    def _parse_review_verdict(review: str) -> str:
+        """从 review 文本首行提取 VERDICT，默认 REVISE（保守起见）。"""
+        if not review:
+            return "REVISE"
+        for line in review.splitlines()[:5]:
+            m = re.search(r'VERDICT\s*[:：]\s*(PASS|REVISE|REJECT)', line, re.IGNORECASE)
+            if m:
+                return m.group(1).upper()
+        # 兜底：若 LLM 没按格式输出，保守判定为需修订
+        return "REVISE"
+
+    @staticmethod
+    def _parse_suggested_chapters(plan: str) -> int:
+        """从企划书中提取"建议章节数"，找不到返回 0。"""
+        if not plan:
+            return 0
+        # 匹配 "建议章节数: 12" / "建议章节数：12" / "章节数: 12" 等
+        m = re.search(r'(?:建议)?章节数\s*[:：]\s*(\d{1,3})', plan)
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= 200:
+                return n
+        # 兜底：匹配 "共 X 章" / "X 章节"
+        m = re.search(r'共?\s*(\d{1,3})\s*章', plan)
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= 200:
+                return n
+        return 0
 
     async def phase_writing_parallel(
         self, start_chapter: int, count: int
@@ -293,8 +394,6 @@ class StoryOrchestrator:
             start_chapter: 起始章节号
             count: 要写的章节数（最多 scene_writers 数量）
         """
-        import asyncio
-
         self.phase = "writing"
         context = self.knowledge.build_context()
         outline = self.knowledge.load_outline()
@@ -305,6 +404,7 @@ class StoryOrchestrator:
 
         # Build prompts for each chapter
         async def write_chapter(writer: SceneWriter, ch_num: int) -> tuple[int, str]:
+            await self._rate_limit_pause()
             ch_outline = self._extract_chapter_outline(outline, ch_num)
             prompt = f"请撰写第 {ch_num} 章。\n\n## 大纲内容\n"
             if ch_outline:
@@ -323,6 +423,9 @@ class StoryOrchestrator:
 
         output_parts = []
         for ch_num, text in results:
+            if not text or text.startswith("[LLM API error"):
+                output_parts.append(f"## 第 {ch_num} 章 ❌ 写作失败\n{text}")
+                continue
             self._log("scene_writer", f"Chapter {ch_num}: {text[:100]}...")
             self.knowledge.save_chapter(ch_num, text, "scene_writer")
             output_parts.append(f"## 第 {ch_num} 章 (初稿)\n{text}")
@@ -384,10 +487,22 @@ class StoryOrchestrator:
         return "\n\n".join(responses)
 
     def _save_characters(self, text: str):
-        """从输出文本中提取并保存角色档案."""
-        import re
+        """从输出文本中提取并保存角色档案.
 
-        # Try to find character sections by markdown headers
+        只有包含角色关键字（姓名/性格/外貌/背景/动机/特质等）的 ## 段落才视为角色档案，
+        避免把"创作风格""世界观"等非角色章节误存为角色。
+        """
+        # 角色段落应至少包含以下关键字之一
+        char_keywords = (
+            "性格", "外貌", "背景", "动机", "特质", "身份", "年龄",
+            "Core Traits", "核心特质", "人物", "角色", " protagonist",
+        )
+        # 排除这些常见非角色标题
+        non_char_titles = (
+            "世界观", "创作", "风格", "基调", "大纲", "主题", "设定",
+            "world", "style", "outline", "theme",
+        )
+
         sections = re.split(r'\n##\s+', text)
         for section in sections:
             section = section.strip()
@@ -396,24 +511,64 @@ class StoryOrchestrator:
             # First line is the character name
             lines = section.split("\n")
             name = lines[0].strip().rstrip(":")
-            if name and len(name) < 30 and not name.startswith("```"):
-                self.knowledge.save_character(name, f"## {name}\n" + "\n".join(lines[1:]))
+            if not name or len(name) >= 30 or name.startswith("```"):
+                continue
+            # 排除明显非角色标题
+            if any(kw in name for kw in non_char_titles):
+                continue
+            # 必须包含至少一个角色关键字才保存
+            if not any(kw in section for kw in char_keywords):
+                continue
+            self.knowledge.save_character(name, f"## {name}\n" + "\n".join(lines[1:]))
 
     def _extract_chapter_outline(self, outline: str, chapter_num: int) -> str:
-        """从大纲中提取指定章节的内容."""
-        import re
+        """从大纲中提取指定章节的内容.
 
-        # Look for "第 X 章" or "Chapter X" patterns
-        patterns = [
-            rf'(?:第\s*{chapter_num}\s*章[^#]*)',
-            rf'(?:##\s*{chapter_num}\.\s*[^#]*)',
-            rf'(?:Chapter\s*{chapter_num}[^#]*)',
+        匹配 "第X章" / "## X." / "Chapter X" 三种标记，截取到下一个章节标记为止。
+        注意: 章号用边界断言，避免 "第1章" 误匹配 "第11章"。
+        """
+        if not outline:
+            return ""
+
+        cn = self._num_to_cn(chapter_num)
+        candidates = [
+            rf'第\s*{chapter_num}\s*章',
+            rf'##\s*{chapter_num}\s*[\.\、]',
+            rf'Chapter\s*{chapter_num}\b',
+            rf'第\s*{cn}\s*章',
         ]
-        for pat in patterns:
-            m = re.search(pat, outline, re.DOTALL | re.IGNORECASE)
-            if m:
-                return m.group(0).strip()[:800]
+        # 下一章节标记的统一正则（数字或中文数字），支持 "## 第N章" 形式
+        next_pat = re.compile(
+            r'\n(?:##\s*)?第\s*\d+\s*章'
+            r'|\n##\s*\d+\s*[\.\、]'
+            r'|\n##\s*第\s*[一二三四五六七八九十]+\s*章'
+            r'|\nChapter\s*\d+\b'
+            r'|\n第\s*[一二三四五六七八九十]+\s*章'
+        )
+
+        for pat in candidates:
+            m = re.search(pat, outline)
+            if not m:
+                continue
+            start = m.start()
+            rest = outline[start:]
+            nxt = next_pat.search(rest[1:])  # 跳过开头的本章节标记
+            end = (1 + nxt.start()) if nxt else len(rest)
+            return rest[:end].strip()[:1500]
         return ""
+
+    @staticmethod
+    def _num_to_cn(n: int) -> str:
+        """阿拉伯数字(1-99)转中文数字。"""
+        cn_nums = "零一二三四五六七八九"
+        if n <= 0:
+            return str(n)
+        if n < 10:
+            return cn_nums[n]
+        if n < 20:
+            return "十" + ("" if n == 10 else cn_nums[n - 10])
+        tens, ones = divmod(n, 10)
+        return cn_nums[tens] + "十" + ("" if ones == 0 else cn_nums[ones])
 
     def _log(self, agent: str, content: str):
         """记录对话日志."""

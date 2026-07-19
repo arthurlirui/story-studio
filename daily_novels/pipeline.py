@@ -10,9 +10,10 @@ from datetime import datetime, timezone, timedelta
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("daily-pipeline")
 
-API_BASE = "https://llmapi.pcl.ac.cn/v1"
-API_KEY = "sk-dLcQBdtUNpw5vxrSP8HjlXfJGb8nP8uYlpSMpfKKTD8QfbbS"
-MODEL = "DeepSeek-V4-Pro"
+API_BASE = os.environ.get("LLM_API_BASE", "https://llmapi.pcl.ac.cn/v1")
+API_KEY = os.environ.get("LLM_API_KEY", "")
+MODEL = os.environ.get("LLM_MODEL", "DeepSeek-V4-Pro")
+BOCHA_API_KEY = os.environ.get("BOCHA_API_KEY", "")
 
 WORKSPACE = Path(__file__).parent
 OUTPUT_DIR = WORKSPACE / "output"
@@ -43,13 +44,19 @@ DIRECTIONS = [
 
 async def search_hot_topics() -> list[dict]:
     """Search for current hot topics using web search API."""
-    # Try multiple search queries to get diverse topics
+    # 动态生成当前年月，避免硬编码过期日期
+    now = datetime.now(BJ)
+    ym = f"{now.year}年{now.month}月"
     queries = [
-        "今日热点新闻 社会民生 2026年6月",
+        f"今日热点新闻 社会民生 {ym}",
         "最近热门话题 感人故事 社会事件",
         "当下热议 社会现象 人物故事",
     ]
-    
+
+    if not BOCHA_API_KEY:
+        logger.warning("BOCHA_API_KEY 未设置，跳过热点搜索")
+        return []
+
     all_results = []
     for query in queries:
         try:
@@ -57,7 +64,7 @@ async def search_hot_topics() -> list[dict]:
                 resp = await client.get(
                     "https://api.bochaai.com/v1/ai/search",
                     params={"query": query, "count": 5},
-                    headers={"Authorization": f"Bearer sk-Y2FvQ0VFQ0Q3NDU2NDQ3MTg4OTJjNDk0ZjdhYzA2NTI2NTY0Nzg2Ng"},
+                    headers={"Authorization": f"Bearer {BOCHA_API_KEY}"},
                     timeout=30.0,
                 )
                 if resp.status_code == 200:
@@ -79,13 +86,21 @@ def select_direction() -> dict:
     """Select a direction from the library, with some randomness."""
     # Weight towards social/emotional directions for daily short stories
     weights = [3, 2, 2, 3, 2, 1, 3, 2, 2, 1, 1, 1, 1, 1, 1]
-    direction = random.choices(DIRECTIONS, weights=weights, k=1)[0]
-    
+    # 长度防御：若 DIRECTIONS 增减后忘记同步 weights，则回退到等权
+    if len(weights) != len(DIRECTIONS):
+        logger.warning(
+            "weights 长度(%d)与 DIRECTIONS(%d)不匹配，使用等权随机",
+            len(weights), len(DIRECTIONS),
+        )
+        direction = random.choice(DIRECTIONS)
+    else:
+        direction = random.choices(DIRECTIONS, weights=weights, k=1)[0]
+
     # If direction has sub-directions, pick one
     sub = ""
     if direction.get("sub"):
         sub = random.choice(direction["sub"])
-    
+
     return {"name": direction["name"], "desc": direction["desc"], "sub": sub}
 
 

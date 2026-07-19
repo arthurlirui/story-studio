@@ -23,6 +23,9 @@ BASE_DELAY = 5.0
 MAX_DELAY = 120.0
 DEFAULT_TIMEOUT = 300.0
 
+# 错误哨兵：所有 API 错误统一以此前缀返回，便于调用方用 startswith 检测
+_ERROR_SENTINEL = "[LLM API error: {}]"
+
 
 class LLMClient:
     """OpenAI-compatible API client with reasoning + streaming support."""
@@ -89,8 +92,11 @@ class LLMClient:
                 return self._extract_content(data)
 
             except httpx.TimeoutException:
-                logger.warning("Timeout (attempt %d/%d), reducing max_tokens", attempt + 1, MAX_RETRIES)
-                payload["max_tokens"] = min(payload["max_tokens"], 2048)
+                # 超时：将 max_tokens 减半后重试（下限 512，避免无限缩小）
+                new_max = max(payload["max_tokens"] // 2, 512)
+                logger.warning("Timeout (attempt %d/%d), reducing max_tokens %d→%d",
+                               attempt + 1, MAX_RETRIES, payload["max_tokens"], new_max)
+                payload["max_tokens"] = new_max
                 continue
 
             except httpx.HTTPStatusError as e:
@@ -108,7 +114,7 @@ class LLMClient:
                 break
 
         logger.error("API error after %d retries: %s", MAX_RETRIES, last_error)
-        return f"[LLM API error: {last_error}]"
+        return _ERROR_SENTINEL.format(last_error)
 
     async def _stream_chat(
         self,
@@ -171,7 +177,7 @@ class LLMClient:
                 logger.error("Stream error (attempt %d/%d): %s", attempt + 1, MAX_RETRIES, e)
                 break
 
-        yield f"[LLM API stream error: {last_error}]"
+        yield _ERROR_SENTINEL.format(last_error)
 
     @staticmethod
     def _extract_content(data: dict[str, Any]) -> str:

@@ -129,20 +129,34 @@ async def main_interactive(orchestrator: StoryOrchestrator):
         elif raw == "/next":
             status = orchestrator.get_status()
             phase = status["phase"]
-            if phase == "planning" or phase == "idle":
+            if phase == "idle":
                 print("\n⏳ 还没有创建项目，先用 /new <需求> 开始。")
-            elif phase == "building":
-                print("\n⏳ 先进入世界观和角色设定阶段...")
+            elif phase == "planning":
+                # 企划已生成，进入建立阶段
+                print("\n🌍 进入世界观和角色设定阶段...")
                 result = await orchestrator.phase_building()
                 print(f"\n✅ 设定完成!\n\n{result[:1000]}...\n\n输入 `/next` 进入大纲阶段。")
-            elif phase == "outlining":
+            elif phase == "building":
                 print("\n📋 生成章节大纲中...")
                 result = await orchestrator.phase_outlining()
                 print(f"\n✅ 大纲完成!\n\n{result[:1000]}...\n\n输入 `/next` 进入写作阶段，或 `/write 1` 写第一章。")
-            elif phase == "writing":
+            elif phase == "outlining":
                 print(f"\n📖 开始第 {status['current_chapter'] + 1} 章...")
                 result = await orchestrator.phase_writing()
                 print(f"\n✅ {result[:1000]}...")
+            elif phase == "writing":
+                chapters = status["chapters_written"]
+                total = status["total_chapters"]
+                if total and chapters >= total:
+                    print("\n🏁 所有章节已完成，进入终审...")
+                    result = await orchestrator.phase_complete()
+                    print(f"\n✅ {result[:1000]}...")
+                else:
+                    print(f"\n📖 继续写作第 {status['current_chapter'] + 1} 章...")
+                    result = await orchestrator.phase_writing()
+                    print(f"\n✅ {result[:1000]}...")
+            elif phase == "complete":
+                print("\n✅ 项目已完成。用 `/new <需求>` 开始新项目。")
             else:
                 print(f"\n当前阶段: {phase}")
 

@@ -14,9 +14,23 @@ API_KEY = "ark-cbb53828-980b-4d51-89c3-215947aa79f1-62bef"
 MODEL = "ark-code-latest"
 OUTPUT_DIR = Path("/data/openclaw/workspace/story-studio/玉璧之战")
 
-# Load outline
-OUTLINE = (OUTPUT_DIR / "03_大纲.md").read_text(encoding="utf-8")
-SETTINGS = (OUTPUT_DIR / "02_设定.md").read_text(encoding="utf-8")
+# 延迟加载大纲与设定，避免 import 时在非部署主机上触发 FileNotFoundError
+_OUTLINE: str | None = None
+_SETTINGS: str | None = None
+
+
+def _load_outline() -> str:
+    global _OUTLINE
+    if _OUTLINE is None:
+        _OUTLINE = (OUTPUT_DIR / "03_大纲.md").read_text(encoding="utf-8")
+    return _OUTLINE
+
+
+def _load_settings() -> str:
+    global _SETTINGS
+    if _SETTINGS is None:
+        _SETTINGS = (OUTPUT_DIR / "02_设定.md").read_text(encoding="utf-8")
+    return _SETTINGS
 
 SYSTEM_PROMPT = """# 你是谁
 
@@ -52,18 +66,50 @@ SYSTEM_PROMPT = """# 你是谁
 - 直接输出章节正文，不要加"第X章"标题之外的任何说明"""
 
 
+import re
+
+_CN_NUMS = "零一二三四五六七八九"
+
+
+def num_to_cn(n: int) -> str:
+    """阿拉伯数字(1-99)转中文数字。"""
+    if n <= 0:
+        return str(n)
+    if n < 10:
+        return _CN_NUMS[n]
+    if n < 20:
+        return "十" + ("" if n == 10 else _CN_NUMS[n - 10])
+    tens, ones = divmod(n, 10)
+    return _CN_NUMS[tens] + "十" + ("" if ones == 0 else _CN_NUMS[ones])
+
+
+def extract_chapter_outline(chapter_num: int) -> str:
+    """从完整大纲中提取指定章节的片段，找到任一章号标记即截取到下一章为止。"""
+    outline = _load_outline()
+    candidates = [
+        rf'第\s*{chapter_num}\s*章',
+        rf'##\s*{chapter_num}\.',
+        rf'Chapter\s*{chapter_num}',
+        rf'第\s*{num_to_cn(chapter_num)}\s*章',
+    ]
+    for pat in candidates:
+        m = re.search(pat, outline)
+        if not m:
+            continue
+        start = m.start()
+        # 截取到下一个章节标记或字符串末尾
+        rest = outline[start:]
+        next_match = re.search(r'\n(?:第\s*\d+\s*章|##\s*\d+\.|Chapter\s*\d+|第\s*[一二三四五六七八九十]+\s*章)', rest[1:])
+        end = (1 + next_match.start()) if next_match else len(rest)
+        return rest[:end].strip()
+    return ""
+
+
 async def generate_chapter(chapter_num: int, prev_chapter_text: str = "") -> str:
     """生成单章."""
-    # Extract this chapter's outline
-    chapter_marker = f"## 第{chapter_num}章" if chapter_num < 10 else f"## 第{chapter_num}章"
-    # Try different patterns
-    for marker in [
-        f"## 第{chapter_num}章",
-        f"## 第 {chapter_num} 章",
-        f"## 第{self._num_to_cn(chapter_num)}章",
-    ]:
-        if marker in OUTLINE:
-            break
+    chapter_outline = extract_chapter_outline(chapter_num)
+    settings = _load_settings()
+    outline = _load_outline()
 
     # Build prompt
     prompt = f"""请根据以下设定和大纲，撰写《玉璧之战》第 {chapter_num} 章的完整正文。
@@ -76,10 +122,13 @@ async def generate_chapter(chapter_num: int, prev_chapter_text: str = "") -> str
 - 每章必须有高潮和爽点
 
 ## 世界观与角色设定
-{SETTINGS[:3000]}
+{settings[:3000]}
 
-## 章节大纲
-{OUTLINE}
+## 本章大纲
+{chapter_outline or "（未找到本章大纲，请参考完整大纲自行推进）"}
+
+## 完整大纲参考
+{outline}
 
 {f"## 前一章内容参考\n{prev_chapter_text[:1500]}" if prev_chapter_text else ""}
 

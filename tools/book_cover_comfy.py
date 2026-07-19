@@ -29,7 +29,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TEMPLATE = ROOT / "templates" / "comfy" / "book_cover_flux2_klein_with_chinese_text_api.json"
 DEFAULT_OUTPUT_DIR = ROOT / "output" / "covers"
 DEFAULT_COMFY_URL = "http://127.0.0.1:8188"
-COMFY_OUTPUT_DIR = Path("/home/openclaw/comfy/ComfyUI/output")
+# ComfyUI output directory — override via COMFY_OUTPUT_DIR env var for non-default installs
+DEFAULT_COMFY_OUTPUT_DIR = "/home/openclaw/comfy/ComfyUI/output"
+COMFY_OUTPUT_DIR = Path(os.environ.get("COMFY_OUTPUT_DIR", DEFAULT_COMFY_OUTPUT_DIR))
 
 
 @dataclass
@@ -252,8 +254,9 @@ def ensure_comfy(comfy_url: str) -> None:
     except Exception as e:
         raise RuntimeError(
             f"ComfyUI is not reachable at {comfy_url}. Start it first, e.g.\n"
-            f"  cd /home/openclaw/comfy/ComfyUI && source .venv/bin/activate && "
-            f"CUDA_VISIBLE_DEVICES=4 python main.py --listen 127.0.0.1 --port 8188 --gpu-only --disable-auto-launch"
+            f"  cd $COMFY_ROOT && source .venv/bin/activate && "
+            f"CUDA_VISIBLE_DEVICES=4 python main.py --listen 127.0.0.1 --port 8188 --gpu-only --disable-auto-launch\n"
+            f"(set COMFY_ROOT / COMFY_OUTPUT_DIR env vars if your install path differs)"
         ) from e
 
 

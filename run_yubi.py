@@ -135,9 +135,7 @@ async def run():
     # Collect all chapters
     full_text_parts = []
     for ch in range(1, 10):
-        ch_content = orch.knowledge.load_chapter(ch, "editor")
-        if not ch_content:
-            ch_content = orch.knowledge.load_chapter(ch, "scene_writer")
+        ch_content = orch.knowledge.load_chapter(ch)
         if ch_content:
             full_text_parts.append(f"# 第 {ch} 章\n\n{ch_content}")
 
