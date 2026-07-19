@@ -1,11 +1,11 @@
 # Story Studio Settings
 
-# ── 后端选择: "ollama" 或 "volcengine" ──
-backend: "volcengine"
+# ── 后端选择: "llm" / "ollama" ──
+backend: "llm"
 
-# ── LLM API (PCL OpenAI-compatible) ──
-volcengine_base_url: "https://llmapi.pcl.ac.cn/v1"
-volcengine_api_key: "sk-dLcQBdtUNpw5vxrSP8HjlXfJGb8nP8uYlpSMpfKKTD8QfbbS"
+# ── LLM API (PCL OpenAI-compatible, llmapi.pcl.ac.cn) ──
+llm_base_url: "https://llmapi.pcl.ac.cn/v1"
+llm_api_key: "sk-dLcQBdtUNpw5vxrSP8HjlXfJGb8nP8uYlpSMpfKKTD8QfbbS"
 
 # ── 模型 ──
 main_model: "DeepSeek-V4-Pro"
@@ -13,6 +13,10 @@ light_model: "DeepSeek-V4-Pro"
 
 # ── Ollama (本地, 未使用时忽略) ──
 ollama_host: "http://localhost:11434"
+
+# ── 旧 Volcengine 配置 (已弃用, 保留兼容) ──
+volcengine_base_url: "https://ark.cn-beijing.volces.com/api/coding/v3"
+volcengine_api_key: ""
 
 # ── 路径 (留空使用代码默认值: ../knowledge, ../output) ──
 knowledge_dir: ""

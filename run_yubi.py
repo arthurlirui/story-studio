@@ -79,9 +79,9 @@ async def run():
     cfg = load_config()
 
     # Choose backend
-    if cfg.backend == "volcengine":
-        client = init_volcengine(cfg.volcengine_base_url, cfg.volcengine_api_key, cfg.main_model)
-        logger.info(f"Backend: Volcengine ({cfg.main_model})")
+    if cfg.backend == "llm":
+        client = init_llm(cfg.llm_base_url, cfg.llm_api_key, cfg.main_model)
+        logger.info(f"Backend: LLM API ({cfg.main_model})")
     else:
         client = ollama_client
         client.default_model = cfg.main_model

@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 from config import StudioConfig, load_config
 from agents import (
-    OllamaClient, VolcengineClient, Showrunner, WorldArchitect, CharacterDesigner,
+    OllamaClient, LLMClient, Showrunner, WorldArchitect, CharacterDesigner,
     SceneWriter, Editor, LiteraryAdvisor, ContinuityKeeper,
     KnowledgeStore,
 )
@@ -51,7 +51,7 @@ class StoryOrchestrator:
             self.cfg.series_knowledge_dir,
         )
 
-        # Create agents — all use Volcengine API
+        # Create agents — all use LLM API
         self.showrunner = Showrunner(
             "总策划", "Showrunner", "主持创作流程, 分配任务, 评审产出",
             self.client, model=self.cfg.main_model, temperature=0.6,

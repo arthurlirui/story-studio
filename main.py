@@ -33,7 +33,7 @@ def banner():
     print("""
 ╔══════════════════════════════════════════════════╗
 ║   🎭 Story Studio — 小说剧本创作智能体团队       ║
-║   火山引擎 API · 多 Agent 协作 · 3 编剧并行       ║
+║   LLM API · 多 Agent 协作 · 3 编剧并行              ║
 ╚══════════════════════════════════════════════════╝
 """)
 
@@ -82,7 +82,7 @@ async def main_interactive(orchestrator: StoryOrchestrator):
     banner()
     help_text()
 
-    print(f"🧠 火山引擎模型: {orchestrator.cfg.main_model} (主力) / {orchestrator.cfg.light_model} (轻量)")
+    print(f"🧠 LLM 模型: {orchestrator.cfg.main_model} (主力) / {orchestrator.cfg.light_model} (轻量)")
     print(f"📂 知识库: {orchestrator.cfg.knowledge_dir}")
     print()
 
@@ -253,16 +253,16 @@ async def main_interactive(orchestrator: StoryOrchestrator):
 async def main():
     cfg = load_config()
 
-    # Init Volcengine client
-    vc = init_client(cfg.volcengine_base_url, cfg.volcengine_api_key, cfg.main_model)
+    # Init LLM client (llmapi.pcl.ac.cn)
+    vc = init_client(cfg.llm_base_url, cfg.llm_api_key, cfg.main_model)
     orchestrator = StoryOrchestrator(cfg, client=vc)
 
     # Check API health
     healthy = await vc.check_health()
     if not healthy:
-        print("⚠️  火山引擎 API 连接异常，但将继续运行...")
+        print("⚠️  LLM API 连接异常，但将继续运行...")
     else:
-        print(f"✅ 火山引擎 API 已连接")
+        print(f"✅ LLM API 已连接")
         models = await vc.list_models()
         if models:
             model_ids = [m["id"] for m in models[:10]]

@@ -24,12 +24,15 @@ class AgentConfig:
 @dataclass
 class StudioConfig:
     # Backend selection
-    backend: str = "ollama"  # "ollama" or "volcengine"
-    # Volcengine API
+    backend: str = "llm"  # "llm" or "ollama"
+    # LLM API (PCL OpenAI-compatible)
+    llm_base_url: str = "https://llmapi.pcl.ac.cn/v1"
+    llm_api_key: str = ""
+    # Legacy Volcengine (deprecated, kept for compat)
     volcengine_base_url: str = "https://ark.cn-beijing.volces.com/api/coding/v3"
     volcengine_api_key: str = ""
-    main_model: str = "qwen3.6-35b:latest"
-    light_model: str = "qwen2.5:7b"
+    main_model: str = "DeepSeek-V4-Pro"
+    light_model: str = "DeepSeek-V4-Pro"
     # Ollama
     ollama_host: str = "http://localhost:11434"
     # Paths
@@ -55,6 +58,8 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
             data = yaml.safe_load(f) or {}
 
         cfg.backend = data.get("backend", cfg.backend)
+        cfg.llm_base_url = data.get("llm_base_url", cfg.llm_base_url)
+        cfg.llm_api_key = data.get("llm_api_key", cfg.llm_api_key)
         cfg.volcengine_base_url = data.get("volcengine_base_url", cfg.volcengine_base_url)
         cfg.volcengine_api_key = data.get("volcengine_api_key", cfg.volcengine_api_key)
         cfg.main_model = data.get("main_model", cfg.main_model)

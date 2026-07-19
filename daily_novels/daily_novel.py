@@ -11,9 +11,9 @@ from datetime import datetime, timezone, timedelta
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("daily-novel")
 
-API_BASE = "https://ark.cn-beijing.volces.com/api/coding/v3"
-API_KEY = "ark-cbb53828-980b-4d51-89c3-215947aa79f1-62bef"
-MODEL = "ark-code-latest"
+API_BASE = "https://llmapi.pcl.ac.cn/v1"
+API_KEY = "sk-dLcQBdtUNpw5vxrSP8HjlXfJGb8nP8uYlpSMpfKKTD8QfbbS"
+MODEL = "DeepSeek-V4-Pro"
 
 WORKSPACE = Path(__file__).parent
 OUTPUT_DIR = WORKSPACE / "output"
