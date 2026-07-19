@@ -1,5 +1,10 @@
 """
-📚 知识库 — 世界观/角色/故事的知识管理
+KnowledgeStore - Two-tier knowledge system (series + variant)
+
+Series layer (series_dir): shared worldview, profession spectrum, conflict engines
+Variant layer (base_dir): per-novel unique worldview, characters, knowledge
+
+Priority: variant > series. Same-name docs: variant overrides series.
 """
 from __future__ import annotations
 
@@ -10,10 +15,12 @@ from typing import Any
 
 
 class KnowledgeStore:
-    """知识库管理器 — 读写世界观、角色、故事知识."""
+    """Two-tier knowledge store (series + variant)."""
 
-    def __init__(self, base_dir: str):
+    def __init__(self, base_dir: str, series_dir: str = ""):
         self.base = Path(base_dir)
+        self.series = Path(series_dir) if series_dir else None
+
         self.world_dir = self.base / "world"
         self.char_dir = self.base / "characters"
         self.story_dir = self.base / "story"
@@ -23,96 +30,120 @@ class KnowledgeStore:
         for d in [self.world_dir, self.char_dir, self.chapters_dir, self.revisions_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
-    # ── 世界观 ─────────────────────────────────────────────────
+    # ── Series layer (read-only) ───────────────────────────────
 
-    def save_world(self, name: str, content: str):
-        """保存世界观文档."""
-        filepath = self.world_dir / f"{name}.md"
-        filepath.write_text(content, encoding="utf-8")
+    def _series_md_files(self) -> list[Path]:
+        if not self.series or not self.series.exists():
+            return []
+        return sorted(self.series.glob("*.md"))
 
-    def load_world(self, name: str = "settings") -> str:
-        """加载世界观文档."""
-        filepath = self.world_dir / f"{name}.md"
+    def load_series_knowledge(self, name: str) -> str:
+        if not self.series:
+            return ""
+        filepath = self.series / f"{name}.md"
         if filepath.exists():
             return filepath.read_text(encoding="utf-8")
         return ""
 
+    def get_all_series_knowledge(self) -> str:
+        parts = []
+        for doc in self._series_md_files():
+            content = doc.read_text(encoding="utf-8")
+            parts.append(f"### [Series] {doc.stem}\n\n{content}")
+        return "\n\n---\n\n".join(parts)
+
+    def list_series_docs(self) -> list[str]:
+        return [f.stem for f in self._series_md_files()]
+
+    # ── World docs (variant layer, read-write) ─────────────────
+
+    def save_world(self, name: str, content: str):
+        filepath = self.world_dir / f"{name}.md"
+        filepath.write_text(content, encoding="utf-8")
+
+    def load_world(self, name: str = "settings") -> str:
+        filepath = self.world_dir / f"{name}.md"
+        if filepath.exists():
+            return filepath.read_text(encoding="utf-8")
+        return self.load_series_knowledge(name)
+
     def list_world_docs(self) -> list[str]:
-        """列出所有世界观文档."""
-        return [f.stem for f in self.world_dir.glob("*.md")]
+        docs = set()
+        for f in self.world_dir.glob("*.md"):
+            docs.add(f.stem)
+        for f in self._series_md_files():
+            docs.add(f.stem)
+        return sorted(docs)
 
     def get_world_summary(self) -> str:
-        """获取所有世界观文档摘要."""
         parts = []
+        seen = set()
         for doc in sorted(self.world_dir.glob("*.md")):
+            seen.add(doc.stem)
             content = doc.read_text(encoding="utf-8")
-            # Take first 500 chars as summary
             summary = content[:500] + ("..." if len(content) > 500 else "")
-            parts.append(f"## {doc.stem}\n{summary}")
+            parts.append(f"## {doc.stem} (variant)\n{summary}")
+        for doc in self._series_md_files():
+            if doc.stem in seen:
+                continue
+            seen.add(doc.stem)
+            content = doc.read_text(encoding="utf-8")
+            summary = content[:500] + ("..." if len(content) > 500 else "")
+            parts.append(f"## {doc.stem} (series)\n{summary}")
         return "\n\n".join(parts)
 
-    # ── 角色 ───────────────────────────────────────────────────
+    # ── Characters ─────────────────────────────────────────────
 
     def save_character(self, name: str, content: str):
-        """保存角色档案."""
         safe_name = self._safe_name(name)
         filepath = self.char_dir / f"{safe_name}.md"
         filepath.write_text(content, encoding="utf-8")
 
     def load_character(self, name: str) -> str:
-        """加载角色档案."""
         safe_name = self._safe_name(name)
         filepath = self.char_dir / f"{safe_name}.md"
         if filepath.exists():
             return filepath.read_text(encoding="utf-8")
-        # Try fuzzy match
         for f in self.char_dir.glob("*.md"):
             if name.lower() in f.stem.lower():
                 return f.read_text(encoding="utf-8")
         return ""
 
     def list_characters(self) -> list[str]:
-        """列出所有角色."""
         return [f.stem for f in self.char_dir.glob("*.md")]
 
     def get_all_character_summaries(self) -> str:
-        """获取所有角色的摘要."""
         parts = []
         for f in sorted(self.char_dir.glob("*.md")):
             content = f.read_text(encoding="utf-8")
             lines = content.split("\n")
-            # Extract name and core traits
             name = f.stem
             traits = ""
             for line in lines:
-                if "核心特质" in line or "Core Traits" in line:
+                if "\u6838\u5fc3\u7279\u8d28" in line or "Core Traits" in line:
                     traits = line.strip()
                     break
             summary = content[:300] + ("..." if len(content) > 300 else "")
             parts.append(f"## {name}\n{traits}\n{summary}")
         return "\n\n".join(parts)
 
-    # ── 章节 ───────────────────────────────────────────────────
+    # ── Chapters ───────────────────────────────────────────────
 
     def save_chapter(self, chapter_num: int, content: str, author: str = "scene_writer"):
-        """保存章节."""
         filepath = self.chapters_dir / f"chapter_{chapter_num:03d}.md"
         filepath.write_text(content, encoding="utf-8")
-        # Also save revision history
         rev_path = self.revisions_dir / f"chapter_{chapter_num:03d}"
         rev_path.mkdir(parents=True, exist_ok=True)
         rev_file = rev_path / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{author}.md"
         rev_file.write_text(content, encoding="utf-8")
 
     def load_chapter(self, chapter_num: int) -> str:
-        """加载章节."""
         filepath = self.chapters_dir / f"chapter_{chapter_num:03d}.md"
         if filepath.exists():
             return filepath.read_text(encoding="utf-8")
         return ""
 
     def list_chapters(self) -> list[int]:
-        """列出所有已有章节号."""
         chapters = []
         for f in self.chapters_dir.glob("chapter_*.md"):
             try:
@@ -123,63 +154,63 @@ class KnowledgeStore:
         return sorted(chapters)
 
     def get_all_chapters_text(self) -> str:
-        """获取所有章节全文."""
         parts = []
         for num in self.list_chapters():
             content = self.load_chapter(num)
-            parts.append(f"# 第 {num} 章\n\n{content}")
+            parts.append(f"# Chapter {num}\n\n{content}")
         return "\n\n---\n\n".join(parts)
 
-    # ── 大纲 ───────────────────────────────────────────────────
+    # ── Outline ────────────────────────────────────────────────
 
     def save_outline(self, content: str):
-        """保存故事大纲."""
         filepath = self.story_dir / "outline.md"
         filepath.write_text(content, encoding="utf-8")
 
     def load_outline(self) -> str:
-        """加载故事大纲."""
         filepath = self.story_dir / "outline.md"
         if filepath.exists():
             return filepath.read_text(encoding="utf-8")
         return ""
 
-    # ── 连续性日志 ─────────────────────────────────────────────
+    # ── Continuity log ─────────────────────────────────────────
 
     def save_continuity_log(self, content: str):
-        """保存连续性检查日志."""
         filepath = self.story_dir / "continuity_log.md"
         filepath.write_text(content, encoding="utf-8")
 
     def load_continuity_log(self) -> str:
-        """加载连续性日志."""
         filepath = self.story_dir / "continuity_log.md"
         if filepath.exists():
             return filepath.read_text(encoding="utf-8")
         return ""
 
-    # ── 上下文构建 ─────────────────────────────────────────────
+    # ── Context builder (two-tier merge) ───────────────────────
 
     def build_context(self, chapter_num: int | None = None) -> str:
-        """构建送给 Agent 的完整知识上下文."""
+        """Build full context for agents: series knowledge + variant knowledge."""
         parts = []
 
-        # 世界观
+        # Series layer: shared knowledge (profession spectrum, conflict engines, etc.)
+        series_knowledge = self.get_all_series_knowledge()
+        if series_knowledge:
+            parts.append("## Series Knowledge (shared)\n" + series_knowledge)
+
+        # Variant layer: this novel's unique worldview
         world_summary = self.get_world_summary()
         if world_summary:
-            parts.append("## 🌍 世界观设定\n" + world_summary)
+            parts.append("## World Setting (this novel)\n" + world_summary)
 
-        # 角色
+        # Characters
         chars = self.get_all_character_summaries()
         if chars:
-            parts.append("## 👤 角色档案\n" + chars)
+            parts.append("## Characters\n" + chars)
 
-        # 大纲
+        # Outline
         outline = self.load_outline()
         if outline:
-            parts.append("## 📋 故事大纲\n" + outline)
+            parts.append("## Outline\n" + outline)
 
-        # 已有章节摘要
+        # Previous chapters
         chapters = self.list_chapters()
         if chapters:
             chapter_summaries = []
@@ -188,22 +219,25 @@ class KnowledgeStore:
                     continue
                 content = self.load_chapter(num)
                 first_para = content.strip().split("\n\n")[0] if content else ""
-                chapter_summaries.append(f"第 {num} 章: {first_para[:200]}...")
+                chapter_summaries.append(f"Ch {num}: {first_para[:200]}...")
             if chapter_summaries:
-                parts.append("## 📖 已完成的章节\n" + "\n".join(chapter_summaries))
+                parts.append("## Completed Chapters\n" + "\n".join(chapter_summaries))
 
-        # 连续性日志
+        # Continuity log
         cl = self.load_continuity_log()
         if cl:
-            parts.append("## 🔍 连续性记录\n" + cl[-1000:])
+            parts.append("## Continuity Log\n" + cl[-1000:])
+
+        # Priority notice
+        parts.append("## Priority\nVariant knowledge > Series knowledge. When conflicting, variant wins.")
 
         return "\n\n".join(parts)
 
     def _safe_name(self, name: str) -> str:
-        """清理文件名."""
+        """Sanitize filename."""
         import re
         return re.sub(r'[^\w\u4e00-\u9fff-]', '_', name.strip())
 
 
-def create_knowledge_store(base_dir: str) -> KnowledgeStore:
-    return KnowledgeStore(base_dir)
+def create_knowledge_store(base_dir: str, series_dir: str = "") -> KnowledgeStore:
+    return KnowledgeStore(base_dir, series_dir)

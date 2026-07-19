@@ -34,6 +34,7 @@ class StudioConfig:
     ollama_host: str = "http://localhost:11434"
     # Paths
     knowledge_dir: str = ""
+    series_knowledge_dir: str = ""  # Series-level shared knowledge (read-only)
     output_dir: str = ""
     agents: dict[str, AgentConfig] = field(default_factory=dict)
     max_rounds: int = 20
@@ -64,6 +65,8 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
 
         if "knowledge_dir" in data:
             cfg.knowledge_dir = data["knowledge_dir"]
+        if "series_knowledge_dir" in data:
+            cfg.series_knowledge_dir = data["series_knowledge_dir"]
         if "output_dir" in data:
             cfg.output_dir = data["output_dir"]
 

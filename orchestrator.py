@@ -45,8 +45,11 @@ class StoryOrchestrator:
         self.cfg = config or load_config()
         self.client = client or volcengine_client
 
-        # Knowledge store
-        self.knowledge = KnowledgeStore(self.cfg.knowledge_dir)
+        # Knowledge store (two-tier: series + variant)
+        self.knowledge = KnowledgeStore(
+            self.cfg.knowledge_dir,
+            self.cfg.series_knowledge_dir,
+        )
 
         # Create agents — all use Volcengine API
         self.showrunner = Showrunner(
@@ -75,7 +78,7 @@ class StoryOrchestrator:
         )
         self.literary_advisor = LiteraryAdvisor(
             "文学顾问", "Literary Advisor", "文学技巧建议",
-            self.client, model=self.cfg.light_model, temperature=0.7,
+            self.client, model=self.cfg.main_model, temperature=0.7,
         )
         self.continuity_keeper = ContinuityKeeper(
             "连续性检查员", "Continuity Keeper", "一致性检查",

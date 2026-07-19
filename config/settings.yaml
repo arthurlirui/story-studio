@@ -1,20 +1,24 @@
 # Story Studio Settings
 
-# ── Volcengine API (火山引擎) ──
-volcengine_base_url: "https://ark.cn-beijing.volces.com/api/coding/v3"
-volcengine_api_key: "ark-cbb53828-980b-4d51-89c3-215947aa79f1-62bef"
-
-# ── Ollama (本地) ──
-ollama_host: "http://localhost:11434"
-main_model: "qwen3.6-35b:latest"
-light_model: "qwen2.5:7b"
-
 # ── 后端选择: "ollama" 或 "volcengine" ──
-backend: "ollama"
+backend: "volcengine"
 
-max_rounds: 20
+# ── LLM API (PCL OpenAI-compatible) ──
+volcengine_base_url: "https://llmapi.pcl.ac.cn/v1"
+volcengine_api_key: "sk-dLcQBdtUNpw5vxrSP8HjlXfJGb8nP8uYlpSMpfKKTD8QfbbS"
+
+# ── 模型 ──
+main_model: "DeepSeek-V4-Pro"
+light_model: "DeepSeek-V4-Pro"
+
+# ── Ollama (本地, 未使用时忽略) ──
+ollama_host: "http://localhost:11434"
+
+# ── 路径 (留空使用代码默认值: ../knowledge, ../output) ──
 knowledge_dir: ""
+series_knowledge_dir: "series/千行百业/knowledge"
 output_dir: ""
 
-# ── Scene Writer 配置 ──
+# ── 其他 ──
+max_rounds: 20
 scene_writers: 3  # 并行写作的编剧数量
