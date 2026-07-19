@@ -463,6 +463,7 @@ class StoryOrchestrator:
 
         # Save final output
         output_path = Path(self.cfg.output_dir) / f"{self.project_name or 'story'}_final.md"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(final_edit, encoding="utf-8")
 
         return f"## 终审\n{final_review}\n\n## 输出\n已保存至: {output_path}"
