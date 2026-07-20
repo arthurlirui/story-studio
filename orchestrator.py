@@ -6,8 +6,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,8 +23,14 @@ from agents import (
     KnowledgeStore,
 )
 from agents.llm_client import client as llm_client
+from agents.text_cleaner import clean_chapter_body, strip_existing_title
 
 logger = logging.getLogger(__name__)
+
+# 完稿阶段默认作者署名
+DEFAULT_AUTHOR = "独孤元景 著"
+# 封面工具脚本路径（相对项目根）
+_COVER_TOOL = Path(__file__).resolve().parent / "tools" / "book_cover_comfy.py"
 
 
 class StoryOrchestrator:
@@ -434,13 +443,19 @@ class StoryOrchestrator:
 
     # ── Phase 5: 完稿 ──────────────────────────────────────────
 
-    async def phase_complete(self) -> str:
-        """完稿阶段: 终审 + 输出."""
+    async def phase_complete(self, review_criteria: str = "") -> str:
+        """完稿阶段: 终审 + 输出 + 清洗版 TXT + 内容简介 + 封面提示词.
+
+        Args:
+            review_criteria: 可选的项目专属评审标准（附加到终审 prompt），
+                例如玉璧之战的"荡气回肠、突出战争残酷"等要求。不传则用通用评审。
+        """
         self.phase = "complete"
         full_text = self.knowledge.get_all_chapters_text()
         context = self.knowledge.build_context()
 
         # Final edit pass
+        await self._rate_limit_pause()
         final_edit = await self.editor.think(
             "请对整个作品做最后一轮全文润色。关注整体文风统一。\n\n" + full_text,
             context,
@@ -448,25 +463,372 @@ class StoryOrchestrator:
         self._log("editor", "Final edit complete")
 
         # Final continuity
+        await self._rate_limit_pause()
         final_cont = await self.continuity_keeper.think(
             "请对全文做最终连续性检查。\n\n" + final_edit[:5000],
             context,
         )
         self._log("continuity_keeper", final_cont)
 
-        # Final approval
-        final_review = await self.showrunner.think(
-            "请对整部作品进行终审，确认交付。\n\n" + final_edit[:3000],
-            context,
-        )
+        # Final approval — 可附加项目专属评审标准
+        await self._rate_limit_pause()
+        review_prompt = "请对整部作品进行终审，确认交付。\n\n"
+        if review_criteria:
+            review_prompt += f"## 评审标准\n{review_criteria}\n\n"
+        review_prompt += f"## 作品正文（节选）\n{final_edit[:5000]}"
+        final_review = await self.showrunner.think(review_prompt, context)
         self._log("showrunner", final_review)
 
-        # Save final output
-        output_path = Path(self.cfg.output_dir) / f"{self.project_name or 'story'}_final.md"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        # Save final markdown (润色版，保留 markdown)
+        out_dir = Path(self.cfg.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        project = self.project_name or "story"
+        output_path = out_dir / f"{project}_final.md"
         output_path.write_text(final_edit, encoding="utf-8")
 
-        return f"## 终审\n{final_review}\n\n## 输出\n已保存至: {output_path}"
+        # ── 新增交付物：清洗版 TXT + 内容简介 + 封面提示词 ──
+        delivery = await self._finalize_delivery(full_text)
+
+        summary = (
+            f"## 终审\n{final_review}\n\n"
+            f"## 输出\n- 润色版 MD: {output_path}\n"
+            f"{delivery}"
+        )
+        return summary
+
+    async def _finalize_delivery(self, full_text: str) -> str:
+        """完稿末尾的三件交付物：清洗版 TXT、内容简介、封面提示词.
+
+        任何一件失败都不阻断其他件，返回各件产出路径的 markdown 列表。
+        """
+        out_dir = Path(self.cfg.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        project = self.project_name or "story"
+        lines: list[str] = []
+
+        # 1. 收集所有章节 {num: content}
+        chapter_nums = self.knowledge.list_chapters()
+        chapters: dict[int, str] = {}
+        for num in chapter_nums:
+            content = self.knowledge.load_chapter(num)
+            if content:
+                chapters[num] = content
+
+        # 2. 每章标题（根据内容生成）
+        titles: dict[int, str] = {}
+        if chapters:
+            await self._rate_limit_pause()
+            try:
+                titles = await self._generate_chapter_titles(chapters)
+            except Exception as e:
+                logger.warning("生成章节标题失败，回退默认标题: %s", e)
+                titles = {}
+
+        # 3. 清洗版 .txt
+        try:
+            txt_content = self._build_clean_txt(titles, chapters)
+            txt_path = out_dir / f"{project}_final.txt"
+            txt_path.write_text(txt_content, encoding="utf-8")
+            lines.append(f"- 清洗版 TXT: {txt_path}")
+            self._log("delivery", f"TXT saved: {txt_path} ({len(txt_content)} chars)")
+        except Exception as e:
+            logger.warning("生成清洗版 TXT 失败: %s", e)
+            lines.append(f"- 清洗版 TXT: ❌ 失败 ({e})")
+
+        # 4. 内容简介（≤500 字）
+        synopsis = ""
+        try:
+            await self._rate_limit_pause()
+            synopsis = await self._generate_synopsis(full_text)
+            synopsis_path = out_dir / f"{project}_synopsis.txt"
+            synopsis_path.write_text(synopsis, encoding="utf-8")
+            lines.append(f"- 内容简介: {synopsis_path}")
+            self._log("delivery", f"Synopsis saved: {synopsis_path} ({len(synopsis)} chars)")
+        except Exception as e:
+            logger.warning("生成内容简介失败: %s", e)
+            lines.append(f"- 内容简介: ❌ 失败 ({e})")
+
+        # 5. 封面提示词 + dry-run
+        try:
+            await self._rate_limit_pause()
+            brief_info = await self._generate_cover_brief(synopsis, full_text, out_dir, project)
+            if brief_info:
+                lines.append(f"- 封面 brief: {brief_info['brief']}")
+                lines.append(f"- 封面提示词: {brief_info['prompt']}")
+                # dry-run 调用封面工具生成 workflow JSON（不连 ComfyUI）
+                wf = await self._render_cover_dry_run(brief_info["brief"], out_dir)
+                if wf:
+                    lines.append(f"- 封面 workflow: {wf}")
+        except Exception as e:
+            logger.warning("生成封面提示词失败: %s", e)
+            lines.append(f"- 封面提示词: ❌ 失败 ({e})")
+
+        return "\n".join(lines)
+
+    async def _generate_chapter_titles(self, chapters: dict[int, str]) -> dict[int, str]:
+        """调用 TitleDesigner 根据每章内容生成标题，返回 {章号: 标题}。
+
+        解析 LLM 输出的 `第N章：[标题]` 行；解析失败的章号回退为 `第 N 章`。
+        """
+        if not chapters:
+            return {}
+        # 构造每章摘要（首段 + 长度），避免 prompt 过长
+        chapter_summaries: list[str] = []
+        for num in sorted(chapters):
+            body = chapters[num]
+            first_para = body.strip().split("\n\n")[0][:300]
+            chapter_summaries.append(f"第 {num} 章（{len(body)} 字）：{first_para}")
+        prompt = (
+            "请为以下每一章设计一个 6-12 字的章节标题，根据章节内容提炼。\n\n"
+            "## 输出格式（必须严格遵守）\n"
+            "每行一个章节，格式为 `第N章：标题`，不要附加风格说明或其他内容。\n"
+            "例如：\n"
+            "第1章：废柴之名\n"
+            "第2章：觉醒\n\n"
+            "## 章节内容摘要\n"
+            + "\n".join(chapter_summaries)
+        )
+        response = await self.title_designer.think(prompt)
+        self._log("title_designer", f"Chapter titles: {response[:200]}")
+
+        titles: dict[int, str] = {}
+        for num in chapters:
+            # 匹配 "第1章：标题" / "第 1 章：标题" / "第1章 标题"
+            m = re.search(
+                rf'第\s*{num}\s*章\s*[:：]?\s*(.+)',
+                response,
+            )
+            if m:
+                title = m.group(1).strip().rstrip("。.")
+                # 去掉行尾可能的 "（风格：XXX）" 后缀
+                title = re.sub(r'[（(].*$', '', title).strip()
+                if title:
+                    titles[num] = title
+            if num not in titles:
+                titles[num] = f"第 {num} 章"  # 兜底
+        return titles
+
+    def _build_clean_txt(self, titles: dict[int, str], chapters: dict[int, str]) -> str:
+        """把所有章节拼成清洗版 .txt 文本（带扉页和每章标题）。
+
+        Args:
+            titles: {章号: 标题}，缺失的章号回退为 "第 N 章"。
+            chapters: {章号: 原始 .md 正文}。
+        """
+        project = self.project_name or "story"
+        # 扉页：书名 + 作者
+        parts = [
+            f"《{project}》",
+            f"作者：{DEFAULT_AUTHOR}",
+            "",
+            "=" * 40,
+            "",
+        ]
+        for num in sorted(chapters):
+            body = chapters[num]
+            # 剥离已有的 # H1 标题行（避免重复）
+            existing_title, rest = strip_existing_title(body)
+            # 清洗正文
+            clean_body = clean_chapter_body(rest)
+            # 章节标题：优先用生成标题，其次已有标题，最后回退
+            title = titles.get(num) or existing_title or f"第 {num} 章"
+            parts.append(f"第 {num} 章 {title}")
+            parts.append("")
+            parts.append(clean_body)
+            parts.append("")
+            parts.append("")  # 章间多一空行
+        # 去掉末尾多余空行，保留单个换行结尾
+        return "\n".join(parts).rstrip() + "\n"
+
+    async def _generate_synopsis(self, full_text: str) -> str:
+        """调用 Showrunner 生成不超过 500 字的内容简介。
+
+        后处理：去 markdown 标记 + 硬截断到 500 字。
+        """
+        # 全文可能很长，截断到 8000 字避免超 token
+        excerpt = full_text[:8000]
+        prompt = (
+            "请基于以下小说正文，撰写一段**不超过 500 字**的内容简介。\n\n"
+            "## 要求\n"
+            "1. 包含主角、核心冲突、故事走向\n"
+            "2. 不剧透结局\n"
+            "3. 纯文本，无 markdown 标记，无标题，无分点\n"
+            "4. 直接输出简介正文，不要任何引导语\n\n"
+            "## 作品正文（节选）\n" + excerpt
+        )
+        response = await self.showrunner.think(prompt)
+        self._log("showrunner", f"Synopsis: {response[:200]}")
+        # 去标记 + 截断
+        synopsis = clean_chapter_body(response)
+        # 去掉可能残留的换行（简介应是单段连续文本）
+        synopsis = " ".join(synopsis.split())
+        if len(synopsis) > 500:
+            synopsis = synopsis[:500]
+        return synopsis
+
+    async def _generate_cover_brief(
+        self,
+        synopsis: str,
+        full_text: str,
+        out_dir: Path,
+        project: str,
+    ) -> dict | None:
+        """调用 Showrunner 扮演 Cover Designer，产出封面 brief JSON + 英文提示词.
+
+        保存 cover_brief.json 和 cover_prompt.txt 到 {out_dir}/covers/。
+        解析失败则用 book_cover_comfy 的启发式回退。
+        Returns: {"brief": Path, "prompt": Path} 或 None。
+        """
+        covers_dir = out_dir / "covers"
+        covers_dir.mkdir(parents=True, exist_ok=True)
+
+        excerpt = full_text[:8000]
+        prompt = (
+            "你现在是封面设计师 (Cover Designer)。请基于以下小说正文和简介，"
+            "为本书设计一个封面视觉方案，输出一个 JSON 对象。\n\n"
+            "## 输出格式（必须严格遵守）\n"
+            "只输出一个 JSON 对象，不要附加任何说明文字、不要 markdown 代码块标记。"
+            "字段如下：\n"
+            "{\n"
+            f'  "title": "{project}",\n'  # 强制使用项目名
+            '  "subtitle": "副标题或类型卖点，可为空字符串",\n'
+            f'  "author": "{DEFAULT_AUTHOR}",\n'  # 强制作者署名
+            '  "genre": "英文类型描述，例如 Chinese historical war fiction / social suspense thriller",\n'
+            '  "mood": "英文情绪关键词，例如 solemn, epic, tragic, heroic",\n'
+            '  "core_visual": "英文核心视觉，一个强意象，不要堆砌",\n'
+            '  "composition": "portrait book cover, centered composition, title-safe empty space at top and bottom",\n'
+            '  "palette": "英文色彩方案，例如 deep bronze, ink black, muted gold, dark red",\n'
+            '  "positive_prompt": "完整的英文视觉提示词，以 \\"Book cover, premium novel cover artwork, \\" 开头，'
+            '以 \\"no readable text, no fake letters, no watermark, no logo\\" 结尾"\n'
+            "}\n\n"
+            "## 约束\n"
+            "- positive_prompt 必须是完整的英文句子，包含 genre、core_visual、mood、palette\n"
+            "- 不要在 positive_prompt 里写中文或书名/作者名（标题和作者由 overlay 单独渲染）\n"
+            "- core_visual 应是故事中最具代表性的一帧画面\n\n"
+            f"## 内容简介\n{synopsis}\n\n"
+            f"## 作品正文（节选）\n{excerpt}"
+        )
+        response = await self.showrunner.think(prompt)
+        self._log("showrunner", f"Cover brief: {response[:200]}")
+
+        # 解析 JSON（容错：提取首个 {...}）
+        brief = self._parse_cover_brief_json(response, project, full_text)
+        if brief is None:
+            logger.warning("Cover brief JSON 解析失败，使用启发式回退")
+            brief = self._heuristic_cover_brief(project, full_text)
+
+        # 强制 author 和 title（LLM 可能返回别的值，必须用项目元数据覆盖）
+        brief["author"] = DEFAULT_AUTHOR
+        brief["title"] = project
+
+        # 保存 brief JSON
+        brief_path = covers_dir / "cover_brief.json"
+        brief_path.write_text(
+            json.dumps(brief, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        # 保存纯英文提示词
+        prompt_text = brief.get("positive_prompt", "")
+        prompt_path = covers_dir / "cover_prompt.txt"
+        prompt_path.write_text(prompt_text, encoding="utf-8")
+
+        return {"brief": brief_path, "prompt": prompt_path}
+
+    @staticmethod
+    def _parse_cover_brief_json(
+        response: str, project: str, full_text: str
+    ) -> dict | None:
+        """从 LLM 响应中提取 cover brief JSON。失败返回 None。"""
+        if not response or response.startswith("[LLM API error"):
+            return None
+        # 去掉可能的 ```json 代码块标记
+        cleaned = re.sub(r'^```(?:json)?\s*', '', response.strip(), flags=re.MULTILINE)
+        cleaned = re.sub(r'\s*```\s*$', '', cleaned).strip()
+        # 提取首个 {...}
+        m = re.search(r'\{.*\}', cleaned, re.DOTALL)
+        if not m:
+            return None
+        try:
+            brief = json.loads(m.group(0))
+            if not isinstance(brief, dict):
+                return None
+            return brief
+        except json.JSONDecodeError:
+            return None
+
+    @staticmethod
+    def _heuristic_cover_brief(project: str, full_text: str) -> dict:
+        """JSON 解析失败时的启发式回退：复用 book_cover_comfy 的类型推断。"""
+        try:
+            from tools.book_cover_comfy import infer_genre_and_mood, extract_core_visual
+            genre, mood, palette, _ = infer_genre_and_mood(full_text)
+            core_visual = extract_core_visual(full_text, genre)
+        except Exception:
+            genre, mood, palette, core_visual = (
+                "contemporary Chinese literary fiction",
+                "restrained, emotional, cinematic",
+                "muted gray, warm amber, deep blue",
+                "symbolic scene from the story, one lonely figure in a cinematic environment",
+            )
+        positive_prompt = (
+            f"Book cover, premium novel cover artwork, {genre}, {core_visual}, "
+            f"portrait book cover, centered composition, title-safe empty space at top and bottom, "
+            f"{mood}, dramatic lighting, high detail, painterly realistic illustration, "
+            f"professional publishing cover design, {palette}, "
+            f"no readable text, no fake letters, no watermark, no logo"
+        )
+        return {
+            "title": project,
+            "subtitle": "",
+            "author": DEFAULT_AUTHOR,
+            "genre": genre,
+            "mood": mood,
+            "core_visual": core_visual,
+            "composition": "portrait book cover, centered composition, title-safe empty space at top and bottom",
+            "palette": palette,
+            "positive_prompt": positive_prompt,
+        }
+
+    async def _render_cover_dry_run(
+        self, brief_path: Path, out_dir: Path
+    ) -> Path | None:
+        """用 --dry-run 调用 book_cover_comfy.py 生成 workflow JSON（不连 ComfyUI）。
+
+        失败只 log warning，不抛异常。返回 workflow JSON 路径或 None。
+        """
+        covers_dir = out_dir / "covers"
+        cmd = [
+            sys.executable,
+            str(_COVER_TOOL),
+            "--brief", str(brief_path),
+            "--output-dir", str(covers_dir),
+            "--dry-run",
+        ]
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                cwd=str(Path(__file__).resolve().parent),
+                text=True,
+                capture_output=True,
+                timeout=120,
+            )
+            if proc.returncode != 0:
+                logger.warning(
+                    "封面 dry-run 失败 (exit %d): %s",
+                    proc.returncode, (proc.stderr or proc.stdout)[-500:],
+                )
+                return None
+            # book_cover_comfy.py 输出多行，最后可能含 JSON 行；dry-run 不输出 JSON，
+            # 但会写入 {stem}_workflow.json。查找最新 workflow 文件。
+            workflows = sorted(covers_dir.glob("*_workflow.json"), key=lambda p: p.stat().st_mtime)
+            if workflows:
+                return workflows[-1]
+            return None
+        except Exception as e:
+            logger.warning("封面 dry-run 异常: %s", e)
+            return None
 
     # ── 辅助方法 ───────────────────────────────────────────────
 

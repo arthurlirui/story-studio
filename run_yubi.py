@@ -132,47 +132,17 @@ async def run():
     logger.info("PHASE 5: 完稿阶段")
     logger.info("=" * 60)
 
-    # Collect all chapters
-    full_text_parts = []
-    for ch in range(1, 10):
-        ch_content = orch.knowledge.load_chapter(ch)
-        if ch_content:
-            full_text_parts.append(f"# 第 {ch} 章\n\n{ch_content}")
-
-    full_text = "\n\n---\n\n".join(full_text_parts)
-
-    # Final edit pass
-    context = orch.knowledge.build_context()
-    final_edit = await orch.editor.think(
-        "请对整个作品做最后一轮全文润色。关注整体文风统一、节奏把控、前后呼应。\n\n" + full_text,
-        context,
-    )
-    await save_phase_output("05_完稿_润色版", final_edit)
-
-    # Final continuity check
-    final_cont = await orch.continuity_keeper.think(
-        "请对全文做最终连续性检查。\n\n" + final_edit[:8000],
-        context,
-    )
-    await save_phase_output("06_连续性检查", final_cont)
-
-    # Final review
-    final_review = await orch.showrunner.think(
-        "请对整部作品进行终审，确认交付。评估是否达到以下要求：\n"
+    # 玉璧之战专属终审标准（保持原有评审质量，不降级为通用评审）
+    review_criteria = (
         "1. 荡气回肠、高潮迭起\n"
         "2. 每章有高潮和爽点\n"
         "3. 突出战争残酷和英雄宿命感\n"
         "4. 高欢的遗憾感和韦孝宽的坚韧\n"
-        "5. 英雄史诗的宏大场面\n\n"
-        + final_edit[:5000],
-        context,
+        "5. 英雄史诗的宏大场面"
     )
-    await save_phase_output("07_终审", final_review)
-
-    # Save final complete version
-    final_path = OUTPUT_DIR / "玉璧之战_完整版.md"
-    final_path.write_text(final_edit, encoding="utf-8")
-    logger.info(f"完整版已保存至: {final_path}")
+    final_result = await orch.phase_complete(review_criteria=review_criteria)
+    await save_phase_output("05_完稿", final_result)
+    logger.info("完稿完成")
 
     # Summary
     status = orch.get_status()
