@@ -35,3 +35,7 @@ characters/_Volcengine_API_error__None_.md
 
 # OpenClaw internal
 .openclaw/
+
+# Secrets / local config
+.env
+config/settings.yaml

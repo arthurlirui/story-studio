@@ -1,0 +1,23 @@
+# Story Studio Settings
+
+# ── Volcengine API (火山引擎) ──
+volcengine_base_url: "https://ark.cn-beijing.volces.com/api/coding/v3"
+# API key 从环境变量读取，不要写在这里。
+# 设置方式：export VOLCENGINE_API_KEY="你的key"
+# 也支持写 "${VOLCENGINE_API_KEY}" 由配置加载时展开。
+volcengine_api_key: "${VOLCENGINE_API_KEY}"
+
+# ── Ollama (本地) ──
+ollama_host: "http://localhost:11434"
+main_model: "qwen3.6-35b:latest"
+light_model: "qwen2.5:7b"
+
+# ── 后端选择: "ollama" 或 "volcengine" ──
+backend: "ollama"
+
+max_rounds: 20
+knowledge_dir: ""
+output_dir: ""
+
+# ── Scene Writer 配置 ──
+scene_writers: 3  # 并行写作的编剧数量

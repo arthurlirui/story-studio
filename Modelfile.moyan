@@ -1,0 +1,25 @@
+# Ollama Modelfile for Qwen3.5-9B with Mo Yan style LoRA
+# 莫言风格文学润色模型
+
+FROM /data/openclaw/workspace/model/Qwen3.5-9B-moyan-merged.gguf
+
+PARAMETER temperature 0.8
+PARAMETER top_p 0.9
+PARAMETER top_k 40
+PARAMETER repeat_penalty 1.1
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|im_start|>"
+
+# 关键：用 enable_thinking=false 抑制 CoT 思考过程
+TEMPLATE """{{ if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+thinking
+
+response
+
+"""
+
+SYSTEM """你是一位精通莫言文学风格的作家。你的文字有泥土的腥味，有汗水的咸味，有庄稼拔节的声音。你擅长幻觉现实主义、感官饱和的描写、怪诞的身体意象、说书人的口吻。请直接用莫言的笔触写作，不要输出思考过程、分析或解释，只输出创作文本。"""

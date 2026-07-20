@@ -3,11 +3,17 @@ Story Studio Configuration.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+def _expand_env(value: str) -> str:
+    """Expand ${VAR} / $VAR references in a config string."""
+    return os.path.expandvars(value) if isinstance(value, str) else value
 
 
 @dataclass
@@ -44,8 +50,24 @@ class StudioConfig:
     scene_writers: int = 3  # 并行写作的编剧数量
 
 
+def _load_dotenv(start: Path) -> None:
+    """Best-effort .env loader (no external deps). Walks up from start dir."""
+    for base in [start, *start.parents]:
+        env_file = base / ".env"
+        if env_file.exists():
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key, val = key.strip(), val.strip().strip('"').strip("'")
+                os.environ.setdefault(key, val)
+            break
+
+
 def load_config(config_dir: str | Path = "") -> StudioConfig:
     config_dir = Path(config_dir) if config_dir else Path(__file__).parent
+    _load_dotenv(config_dir)
     config_file = config_dir / "settings.yaml"
 
     cfg = StudioConfig(
@@ -61,7 +83,7 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
         cfg.llm_base_url = data.get("llm_base_url", cfg.llm_base_url)
         cfg.llm_api_key = data.get("llm_api_key", cfg.llm_api_key)
         cfg.volcengine_base_url = data.get("volcengine_base_url", cfg.volcengine_base_url)
-        cfg.volcengine_api_key = data.get("volcengine_api_key", cfg.volcengine_api_key)
+        cfg.volcengine_api_key = _expand_env(data.get("volcengine_api_key", cfg.volcengine_api_key))
         cfg.main_model = data.get("main_model", cfg.main_model)
         cfg.light_model = data.get("light_model", cfg.light_model)
         cfg.ollama_host = data.get("ollama_host", cfg.ollama_host)
@@ -74,6 +96,9 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
             cfg.series_knowledge_dir = data["series_knowledge_dir"]
         if "output_dir" in data:
             cfg.output_dir = data["output_dir"]
+
+    # Environment variable overrides file value (keeps secrets out of the repo).
+    cfg.volcengine_api_key = os.environ.get("VOLCENGINE_API_KEY", cfg.volcengine_api_key)
 
     # Ensure directories exist
     Path(cfg.knowledge_dir).mkdir(parents=True, exist_ok=True)
