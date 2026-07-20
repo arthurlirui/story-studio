@@ -1,0 +1,220 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load FLUX.2 Klein base model"
+    },
+    "inputs": {
+      "unet_name": "flux-2-klein-base-4b-fp8.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Book cover LoRA"
+    },
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "lora_name": "[FLUX.2.Klein]BookCover_Redmond.safetensors",
+      "strength_model": 0.85
+    }
+  },
+  "3": {
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load FLUX.2 text encoder"
+    },
+    "inputs": {
+      "clip_name": "qwen_3_4b_fp4_flux2.safetensors",
+      "type": "flux2",
+      "device": "default"
+    }
+  },
+  "4": {
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load FLUX.2 VAE"
+    },
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Positive prompt — generate clean cover art only"
+    },
+    "inputs": {
+      "clip": [
+        "3",
+        0
+      ],
+      "text": "Book cover, premium novel cover artwork, cinematic Chinese historical fiction, late Ming early Qing maritime era, a Chinese war junk with cannons firing in a fierce sea battle at dusk, a Dutch galleon burning in the distance, stormy ocean and fire glow, epic naval warfare mood, centered composition, completely blank empty sky at top third and blank sea at bottom, absolutely no text anywhere, no letters, no characters, no readable text, no fake letters, no signage, no watermark, no logo, dramatic cinematic lighting, high detail, painterly realistic illustration, professional publishing cover design, deep navy blue, fire orange, dark teal and gunsmoke gray color palette"
+    }
+  },
+  "6": {
+    "class_type": "FluxGuidance",
+    "_meta": {
+      "title": "FLUX guidance"
+    },
+    "inputs": {
+      "conditioning": [
+        "5",
+        0
+      ],
+      "guidance": 4.0
+    }
+  },
+  "7": {
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "Guider"
+    },
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "conditioning": [
+        "6",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "Sampler"
+    },
+    "inputs": {
+      "sampler_name": "euler"
+    }
+  },
+  "9": {
+    "class_type": "Flux2Scheduler",
+    "_meta": {
+      "title": "FLUX.2 scheduler"
+    },
+    "inputs": {
+      "steps": 20,
+      "width": 768,
+      "height": 1152
+    }
+  },
+  "10": {
+    "class_type": "EmptyFlux2LatentImage",
+    "_meta": {
+      "title": "Portrait book-cover canvas"
+    },
+    "inputs": {
+      "width": 768,
+      "height": 1152,
+      "batch_size": 1
+    }
+  },
+  "11": {
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "Seed"
+    },
+    "inputs": {
+      "noise_seed": 838
+    }
+  },
+  "12": {
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "Sample"
+    },
+    "inputs": {
+      "noise": [
+        "11",
+        0
+      ],
+      "guider": [
+        "7",
+        0
+      ],
+      "sampler": [
+        "8",
+        0
+      ],
+      "sigmas": [
+        "9",
+        0
+      ],
+      "latent_image": [
+        "10",
+        0
+      ]
+    }
+  },
+  "13": {
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "Decode base cover art"
+    },
+    "inputs": {
+      "samples": [
+        "12",
+        0
+      ],
+      "vae": [
+        "4",
+        0
+      ]
+    }
+  },
+  "14": {
+    "class_type": "BookCoverTextOverlay",
+    "_meta": {
+      "title": "Overlay real Chinese title and author with Pillow"
+    },
+    "inputs": {
+      "image": [
+        "13",
+        0
+      ],
+      "title": "明末海枭",
+      "author": "story-studio 著",
+      "subtitle": "红毛炮再远，也轰不塌我的战舰",
+      "title_font_path": "/usr/share/fonts/truetype/arphic-gkai00mp/gkai00mp.ttf",
+      "author_font_path": "/usr/share/fonts/truetype/arphic-gbsn00lp/gbsn00lp.ttf",
+      "title_font_size": 136,
+      "author_font_size": 46,
+      "subtitle_font_size": 40,
+      "title_layout": "horizontal",
+      "title_x_percent": 50.0,
+      "title_y_percent": 36.0,
+      "author_y_percent": 85.5,
+      "subtitle_y_percent": 75.0,
+      "title_color": "#F2D38A",
+      "author_color": "#EEE2C2",
+      "stroke_color": "#160F0A",
+      "stroke_width": 4,
+      "title_spacing": 12,
+      "author_tracking": 4,
+      "shadow": true,
+      "shadow_offset_x": 5,
+      "shadow_offset_y": 6,
+      "shadow_blur": 2
+    }
+  },
+  "15": {
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save final cover with text"
+    },
+    "inputs": {
+      "images": [
+        "14",
+        0
+      ],
+      "filename_prefix": "story_studio_cover_明末海枭_20260705_171705"
+    }
+  }
+}

@@ -62,6 +62,8 @@ class CoverBrief:
     author_color: str = "#EEE2C2"
     stroke_color: str = "#160F0A"
     lora_strength: float = 0.85
+    title_font_path: str = ""
+    author_font_path: str = ""
 
 
 def safe_filename(s: str, max_len: int = 48) -> str:
@@ -189,6 +191,8 @@ def brief_from_args(args: argparse.Namespace) -> CoverBrief:
         steps=args.steps or int(data.get("steps", 20)),
         title_layout=args.title_layout or data.get("title_layout", "vertical"),
         lora_strength=float(args.lora_strength if args.lora_strength is not None else data.get("lora_strength", 0.85)),
+        title_font_path=args.title_font or data.get("title_font_path", ""),
+        author_font_path=args.author_font or data.get("author_font_path", ""),
     )
     # Optional layout/style overrides from JSON only for now.
     for k in [
@@ -234,6 +238,10 @@ def inject_workflow(wf: dict[str, Any], brief: CoverBrief, filename_prefix: str)
     overlay["title_color"] = brief.title_color
     overlay["author_color"] = brief.author_color
     overlay["stroke_color"] = brief.stroke_color
+    if brief.title_font_path:
+        overlay["title_font_path"] = brief.title_font_path
+    if brief.author_font_path:
+        overlay["author_font_path"] = brief.author_font_path
 
     wf["15"]["inputs"]["filename_prefix"] = filename_prefix
     return wf
@@ -315,6 +323,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--comfy-url", default=os.environ.get("COMFY_URL", DEFAULT_COMFY_URL), help="ComfyUI URL.")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--width", type=int, default=768)
+    ap.add_argument("--title-font", default="", help="书名字体 ttf/otf 路径")
+    ap.add_argument("--author-font", default="", help="作者/副标题字体 ttf/otf 路径")
     ap.add_argument("--height", type=int, default=1152)
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--title-layout", choices=["vertical", "horizontal"], default="vertical")

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Story Studio Settings — 示例配置
 #
 # 复制为 settings.yaml 后填入真实密钥。settings.yaml 已在 .gitignore 中，
@@ -38,3 +39,28 @@ max_context_chars: 60000 # build_context 总字符预算
 # agent_models:
 #   editor: "deepseek-r1-32b"
 #   showrunner: "deepseek-v4-pro"
+=======
+# Story Studio Settings
+
+# ── Volcengine API (火山引擎) ──
+volcengine_base_url: "https://ark.cn-beijing.volces.com/api/coding/v3"
+# API key 从环境变量读取，不要写在这里。
+# 设置方式：export VOLCENGINE_API_KEY="你的key"
+# 也支持写 "${VOLCENGINE_API_KEY}" 由配置加载时展开。
+volcengine_api_key: "${VOLCENGINE_API_KEY}"
+
+# ── Ollama (本地) ──
+ollama_host: "http://localhost:11434"
+main_model: "qwen3.6-35b:latest"
+light_model: "qwen2.5:7b"
+
+# ── 后端选择: "ollama" 或 "volcengine" ──
+backend: "ollama"
+
+max_rounds: 20
+knowledge_dir: ""
+output_dir: ""
+
+# ── Scene Writer 配置 ──
+scene_writers: 3  # 并行写作的编剧数量
+>>>>>>> 526e7f056fba7e56e975e5f2b965e16e7e911b5c

@@ -1,0 +1,65 @@
+{
+  "series": "破镜之后",
+  "title": "和离三年后，侯府发现嫡子是我生的",
+  "mode": "historical",
+  "ending": "no_forgiveness",
+  "years_after": 3.0,
+  "logline": "古言长篇。故事从女主被偏心错爱+身份剥夺伤害3年后切入；旧人重新出现，迟来的真相与悔意逼近，而她必须决定是否绝不原谅。",
+  "target_audience": "女频读者，偏好追妻火葬场、迟来深情、爽打脸、断亲、不原谅或破镜重圆",
+  "tone": "强情绪、强钩子、爽点明确、女主掌握选择权",
+  "wound_type": "偏心错爱+身份剥夺",
+  "misunderstanding": "M08",
+  "power_structure": "P02",
+  "irreversible_loss": "小产伤身、被休书公示羞辱",
+  "truth_reveal_plan": [
+    "第一层：表层误会松动",
+    "第二层：女主当年代价曝光",
+    "第三层：旧系统真正责任曝光"
+  ],
+  "heroine": {
+    "name": "女主名",
+    "archetype": "H01-H04",
+    "past_role": "当年在旧关系中的位置",
+    "current_identity": "N年后的新身份/新职业/新权力",
+    "visible_strength": "开篇可见能力",
+    "hidden_wound": "不轻易说出的旧伤",
+    "non_negotiable_boundary": "不可被突破的边界",
+    "final_choice": "她最终要选择什么"
+  },
+  "old_love": {
+    "name": "旧爱/前夫/帝王/师尊名",
+    "archetype": "O01-O04",
+    "past_mistake": "当年具体错处",
+    "current_status": "现在的权力/身份",
+    "first_misjudgment": "重逢时的错误判断",
+    "breakdown_trigger": "第一次破防点",
+    "redemption_price": "若追悔，必须付出的代价"
+  },
+  "new_love_or_ally": {
+    "name": "新男主/盟友名，可为空",
+    "archetype": "N01-N03 | none",
+    "relationship_to_heroine": "契约/同盟/暗线旧识/事业伙伴",
+    "own_goal": "他自己的目标，不只是工具人"
+  },
+  "rival_or_antagonist": {
+    "name": "白月光/假千金/宗门小师妹/侯府利益者",
+    "archetype": "R01-R03",
+    "resource": "她掌握或依附的资源",
+    "strategy": "她如何制造误会或维持既得利益"
+  },
+  "plot_engine": "PE02",
+  "volume_plan": [
+    "卷一：重逢，她不再回头",
+    "卷二：旧账，有人该还了",
+    "卷三：风暴，迟来的深情",
+    "卷四：选择，破镜之后"
+  ],
+  "opening_hook": "旧人以为她还在原地，第一章发现她已拥有新身份。",
+  "cover_direction": "破镜、雨夜、女主背影、旧人远景、迟来悔意",
+  "forbidden_moves": [
+    "不让女主无条件原谅",
+    "不让孩子逼复合",
+    "不美化强制伤害",
+    "不让旧人只靠哭获得赦免"
+  ]
+}

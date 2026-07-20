@@ -11,6 +11,11 @@ from typing import Any
 import yaml
 
 
+def _expand_env(value: str) -> str:
+    """Expand ${VAR} / $VAR references in a config string."""
+    return os.path.expandvars(value) if isinstance(value, str) else value
+
+
 @dataclass
 class AgentConfig:
     name: str
@@ -47,8 +52,24 @@ class StudioConfig:
     max_context_chars: int = 60000  # build_context 总字符预算，超出按章节号倒序裁剪最旧摘要
 
 
+def _load_dotenv(start: Path) -> None:
+    """Best-effort .env loader (no external deps). Walks up from start dir."""
+    for base in [start, *start.parents]:
+        env_file = base / ".env"
+        if env_file.exists():
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key, val = key.strip(), val.strip().strip('"').strip("'")
+                os.environ.setdefault(key, val)
+            break
+
+
 def load_config(config_dir: str | Path = "") -> StudioConfig:
     config_dir = Path(config_dir) if config_dir else Path(__file__).parent
+    _load_dotenv(config_dir)
     config_file = config_dir / "settings.yaml"
 
     cfg = StudioConfig(
@@ -63,6 +84,11 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
         cfg.backend = data.get("backend", cfg.backend)
         cfg.llm_base_url = data.get("llm_base_url", cfg.llm_base_url)
         cfg.llm_api_key = data.get("llm_api_key", cfg.llm_api_key)
+<<<<<<< HEAD
+=======
+        cfg.volcengine_base_url = data.get("volcengine_base_url", cfg.volcengine_base_url)
+        cfg.volcengine_api_key = _expand_env(data.get("volcengine_api_key", cfg.volcengine_api_key))
+>>>>>>> 526e7f056fba7e56e975e5f2b965e16e7e911b5c
         cfg.main_model = data.get("main_model", cfg.main_model)
         cfg.light_model = data.get("light_model", cfg.light_model)
         cfg.ollama_host = data.get("ollama_host", cfg.ollama_host)
@@ -78,10 +104,15 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
         if "output_dir" in data:
             cfg.output_dir = data["output_dir"]
 
+<<<<<<< HEAD
     # Env fallback：settings.yaml 缺密钥时从 LLM_API_KEY 环境变量取
     # （settings.yaml 已加入 .gitignore，不进版本库；生产用 env 注入更安全）
     if not cfg.llm_api_key:
         cfg.llm_api_key = os.environ.get("LLM_API_KEY", "")
+=======
+    # Environment variable overrides file value (keeps secrets out of the repo).
+    cfg.volcengine_api_key = os.environ.get("VOLCENGINE_API_KEY", cfg.volcengine_api_key)
+>>>>>>> 526e7f056fba7e56e975e5f2b965e16e7e911b5c
 
     # Ensure directories exist
     Path(cfg.knowledge_dir).mkdir(parents=True, exist_ok=True)
