@@ -24,6 +24,7 @@ from agents import (
 )
 from agents.llm_client import client as llm_client
 from agents.text_cleaner import clean_chapter_body, strip_existing_title
+from orchestrator_state import RunState, new_job_id
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,34 @@ def _truncate_at_sentence(text: str, max_len: int) -> str:
         if idx >= max_len // 2:
             return cut[: idx + 1]
     return cut
+
+
+# 中文数字 → 阿拉伯数字（支持 1-99，与 _num_to_cn 互逆）
+_CN_DIGITS = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+              "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
+
+def _cn_to_int(s: str) -> int | None:
+    """中文数字转 int。支持 '一'..'九十九'，以及纯阿拉伯数字。返回 None 表示无法解析。"""
+    s = s.strip()
+    if not s:
+        return None
+    # 纯阿拉伯数字
+    if s.isdigit():
+        return int(s)
+    # 单字：一/十/...九
+    if s in _CN_DIGITS:
+        return _CN_DIGITS[s]
+    # "十X" = 10 + X
+    if len(s) == 2 and s[0] == "十":
+        return 10 + _CN_DIGITS.get(s[1], 0)
+    # "X十" = X*10
+    if len(s) == 2 and s[1] == "十":
+        return _CN_DIGITS.get(s[0], 0) * 10
+    # "X十Y" = X*10 + Y
+    if len(s) == 3 and s[1] == "十":
+        return _CN_DIGITS.get(s[0], 0) * 10 + _CN_DIGITS.get(s[2], 0)
+    return None
 
 
 class StoryOrchestrator:
@@ -83,17 +112,18 @@ class StoryOrchestrator:
         )
 
         # Create agents — all use LLM API
+        # Per-agent 模型路由：agent_models 覆盖 role 默认值；缺键回退到 main/light
         self.showrunner = Showrunner(
             "总策划", "Showrunner", "主持创作流程, 分配任务, 评审产出",
-            self.client, model=self.cfg.main_model, temperature=0.6,
+            self.client, model=self._agent_model("showrunner", "main"), temperature=0.6,
         )
         self.world_architect = WorldArchitect(
             "世界观架构师", "World Architect", "构建世界观设定",
-            self.client, model=self.cfg.main_model, temperature=0.8,
+            self.client, model=self._agent_model("world_architect", "main"), temperature=0.8,
         )
         self.character_designer = CharacterDesigner(
             "角色设计师", "Character Designer", "创建角色档案",
-            self.client, model=self.cfg.main_model, temperature=0.8,
+            self.client, model=self._agent_model("character_designer", "main"), temperature=0.8,
         )
         # Multiple Scene Writers for parallel chapter writing (at least 1)
         self.scene_writers: list[SceneWriter] = []
@@ -101,33 +131,34 @@ class StoryOrchestrator:
         for i in range(writer_count):
             sw = SceneWriter(
                 f"场景编剧{i + 1}", "Scene Writer", f"核心写作 #{i + 1}",
-                self.client, model=self.cfg.main_model, temperature=0.9, max_tokens=8192,
+                self.client, model=self._agent_model("scene_writer", "main"),
+                temperature=0.9, max_tokens=8192,
             )
             self.scene_writers.append(sw)
         self.editor = Editor(
             "编辑", "Editor", "文字润色",
-            self.client, model=self.cfg.main_model, temperature=0.5,
+            self.client, model=self._agent_model("editor", "light"), temperature=0.5,
         )
         self.literary_advisor = LiteraryAdvisor(
             "文学顾问", "Literary Advisor", "文学技巧建议",
-            self.client, model=self.cfg.main_model, temperature=0.7,
+            self.client, model=self._agent_model("literary_advisor", "light"), temperature=0.7,
         )
         self.continuity_keeper = ContinuityKeeper(
             "连续性检查员", "Continuity Keeper", "一致性检查",
-            self.client, model=self.cfg.main_model, temperature=0.4,
+            self.client, model=self._agent_model("continuity_keeper", "light"), temperature=0.4,
         )
         # Specialist designers (网文标题/钩子/爽点)
         self.title_designer = TitleDesigner(
             "标题设计师", "Title Designer", "设计书名/章节标题",
-            self.client, model=self.cfg.main_model, temperature=0.8,
+            self.client, model=self._agent_model("title_designer", "light"), temperature=0.8,
         )
         self.hooker = Hooker(
             "钩子设计师", "Hooker", "设计章节钩子",
-            self.client, model=self.cfg.main_model, temperature=0.8,
+            self.client, model=self._agent_model("hooker", "light"), temperature=0.8,
         )
         self.climax_designer = ClimaxDesigner(
             "爽点设计师", "Climax Designer", "设计爽点与高潮",
-            self.client, model=self.cfg.main_model, temperature=0.8,
+            self.client, model=self._agent_model("climax_designer", "light"), temperature=0.8,
         )
 
         self.agents = {
@@ -152,6 +183,83 @@ class StoryOrchestrator:
         self.total_chapters: int = 0
         self.conversation_log: list[dict] = []
         self._call_count: int = 0
+        # RunState：持久化运行进度 + 成本聚合
+        self.job_id: str = new_job_id()
+        self.run_cost: dict[str, dict[str, int]] = {}
+        self._state_path: Path = Path(self.cfg.knowledge_dir) / "run_state.json"
+        self._load_state_from_disk()
+
+    # ── RunState 持久化 ────────────────────────────────────────
+
+    def _load_state_from_disk(self) -> None:
+        """从 run_state.json 恢复状态（若存在）。"""
+        state = RunState.load(self._state_path)
+        if state:
+            state.merge_into_orchestrator(self)
+            logger.info(
+                "从 run_state.json 恢复: job_id=%s phase=%s project=%s chapter=%d/%d",
+                self.job_id, self.phase, self.project_name or "(none)",
+                self.current_chapter, self.total_chapters,
+            )
+
+    def _save_state(self) -> None:
+        """持久化当前运行状态到 run_state.json。"""
+        state = RunState(
+            job_id=self.job_id,
+            project_name=self.project_name,
+            phase=self.phase,
+            current_chapter=self.current_chapter,
+            total_chapters=self.total_chapters,
+            cost=dict(self.run_cost),
+        )
+        try:
+            state.save(self._state_path)
+        except Exception as e:
+            logger.warning("保存 run_state 失败: %s", e)
+
+    def _record_usage(self, agent: Any) -> None:
+        """从 agent.last_usage 聚合到 run_cost + 持久化。"""
+        usage = getattr(agent, "last_usage", None)
+        if not usage:
+            return
+        model = getattr(agent, "model", "unknown")
+        bucket = self.run_cost.setdefault(model, {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "calls": 0,
+        })
+        bucket["prompt_tokens"] += int(usage.get("prompt_tokens", 0))
+        bucket["completion_tokens"] += int(usage.get("completion_tokens", 0))
+        bucket["total_tokens"] += int(usage.get("total_tokens", 0))
+        bucket["calls"] += 1
+
+    def _set_phase(self, phase: str) -> None:
+        """切换 phase 并持久化。"""
+        self.phase = phase
+        self._save_state()
+
+    def _agent_model(self, role: str, tier: str = "main") -> str:
+        """Per-agent 模型路由：agent_models[role] 优先，缺键回退 main/light_model。
+
+        tier="main" → 回退 self.cfg.main_model；tier="light" → 回退 self.cfg.light_model。
+        """
+        override = self.cfg.agent_models.get(role)
+        if override:
+            return override
+        return self.cfg.light_model if tier == "light" else self.cfg.main_model
+
+    def _set_project_name(self, name: str) -> None:
+        """设置 project_name 并持久化。"""
+        if name and not self.project_name:
+            self.project_name = name
+            self._save_state()
+
+    def _set_total_chapters(self, total: int) -> None:
+        """设置 total_chapters 并持久化。"""
+        if total > 0:
+            self.total_chapters = total
+            self._save_state()
 
     async def _rate_limit_pause(self):
         """在连续 API 调用之间插入延迟，避免触发限流."""
@@ -163,7 +271,7 @@ class StoryOrchestrator:
 
     async def phase_planning(self, user_request: str) -> str:
         """策划阶段: 接收用户需求，生成创作企划."""
-        self.phase = "planning"
+        self._set_phase("planning")
         self._log("user", user_request)
 
         # Showrunner 分析需求
@@ -201,7 +309,7 @@ class StoryOrchestrator:
 
     async def phase_building(self) -> str:
         """建立阶段: 世界观 + 角色设定."""
-        self.phase = "building"
+        self._set_phase("building")
         plan = self.knowledge.load_world("plan")
         context = f"项目创作企划:\n{plan}"
 
@@ -240,14 +348,14 @@ class StoryOrchestrator:
         若未显式指定章节数，尝试从企划书中解析"建议章节数"；
         解析失败则默认 10 章。
         """
-        self.phase = "outlining"
+        self._set_phase("outlining")
 
         if total_chapters is None:
             plan = self.knowledge.load_world("plan")
             total_chapters = self._parse_suggested_chapters(plan) or 10
         self.total_chapters = total_chapters
 
-        context = self.knowledge.build_context()
+        context = self.knowledge.build_context(max_chars=self.cfg.max_context_chars)
 
         outline = await self.showrunner.think(
             f"请生成 {total_chapters} 章的完整章节大纲。\n\n"
@@ -307,11 +415,45 @@ class StoryOrchestrator:
 
         # 从大纲中解析书名，回写 project_name（已设值则不覆盖）
         title = self._parse_book_title(final_outline)
-        if title and not self.project_name:
-            self.project_name = title
-            logger.info("从大纲解析到书名: %s", title)
+        if title:
+            self._set_project_name(title)
+            if title == self.project_name:
+                logger.info("从大纲解析到书名: %s", title)
 
+        # 从大纲中解析总章节数（若调用方未指定），持久化
+        if not self.total_chapters:
+            parsed_total = self._parse_total_chapters(final_outline)
+            if parsed_total:
+                self._set_total_chapters(parsed_total)
+                logger.info("从大纲解析到总章节数: %d", parsed_total)
+
+        self._save_state()
         return final_outline
+
+    @staticmethod
+    def _parse_total_chapters(outline: str) -> int | None:
+        """从大纲文本中提取总章节数。返回整数或 None。
+
+        优先匹配 "第N章" 序号的最大值；失败再匹配 "共N章" / "N章" 字样。
+        """
+        if not outline:
+            return None
+        # 1. 收集所有 "第N章" 的 N（支持中文数字）
+        chapter_nums: list[int] = []
+        for m in re.finditer(r'第\s*([一二三四五六七八九十百零\d]+)\s*章', outline):
+            n = _cn_to_int(m.group(1))
+            if n and n > 0:
+                chapter_nums.append(n)
+        if chapter_nums:
+            return max(chapter_nums)
+        # 2. "共N章" / "全书N章" / "N章" 字样
+        m = re.search(r'(?:共|全书|总计)\s*(\d+)\s*章', outline)
+        if m:
+            return int(m.group(1))
+        m = re.search(r'^\s*(\d+)\s*章\s*$', outline, re.MULTILINE)
+        if m:
+            return int(m.group(1))
+        return None
 
     @staticmethod
     def _parse_book_title(outline: str) -> str | None:
@@ -335,8 +477,12 @@ class StoryOrchestrator:
     # ── Phase 4: 写作 (支持并行) ──────────────────────────────
 
     async def phase_writing(self, chapter_num: int | None = None) -> str:
-        """写作阶段: 写一章 → 润色 → 检查 (单章模式)."""
-        self.phase = "writing"
+        """写作阶段: 写一章 → 润色 → 检查 → 评审（带自动修订循环）.
+
+        自动修订：若 Showrunner 给出 REVISE/REJECT，将评审意见回灌给 scene_writer
+        重写，最多 self.cfg.max_rounds 轮。PASS 或耗尽轮次则交付（耗尽时标警告）。
+        """
+        self._set_phase("writing")
 
         if chapter_num:
             self.current_chapter = chapter_num
@@ -344,67 +490,124 @@ class StoryOrchestrator:
             chapters = self.knowledge.list_chapters()
             self.current_chapter = (chapters[-1] if chapters else 0) + 1
 
-        context = self.knowledge.build_context(self.current_chapter)
+        context = self.knowledge.build_context(self.current_chapter,
+                                                max_chars=self.cfg.max_context_chars)
         outline = self.knowledge.load_outline()
-
-        # Step 1: Write chapter (use first scene writer)
-        scene_prompt = (
-            f"请撰写第 {self.current_chapter} 章。\n\n"
-            f"## 大纲内容\n"
-        )
         chapter_outline = self._extract_chapter_outline(outline, self.current_chapter)
-        if chapter_outline:
-            scene_prompt += chapter_outline
-        else:
-            scene_prompt += f"第 {self.current_chapter} 章（根据上下文自然推进）"
 
         writer = self.scene_writers[0]
-        await self._rate_limit_pause()
-        chapter_text = await writer.think(scene_prompt, context)
-        if not chapter_text or chapter_text.startswith("[LLM API error"):
-            return f"## 第 {self.current_chapter} 章 ❌ 写作失败\n\n{chapter_text}"
-        self._log("scene_writer", f"Chapter {self.current_chapter}: {chapter_text[:100]}...")
-        self.knowledge.save_chapter(self.current_chapter, chapter_text, "scene_writer")
+        max_rounds = max(1, self.cfg.max_rounds)
 
-        # Step 2: Editor polish
-        await self._rate_limit_pause()
-        edited = await self.editor.think(
-            f"请润色第 {self.current_chapter} 章。保留所有内容, 只优化表达。\n\n" + chapter_text,
-            context,
+        chapter_text = ""
+        edited = ""
+        review = ""
+        verdict = "REVISE"
+
+        for round_n in range(max_rounds):
+            # Step 1: Write (第 0 轮用初稿 prompt；后续轮回灌评审意见)
+            if round_n == 0:
+                scene_prompt = (
+                    f"请撰写第 {self.current_chapter} 章。\n\n"
+                    f"## 大纲内容\n"
+                )
+                if chapter_outline:
+                    scene_prompt += chapter_outline
+                else:
+                    scene_prompt += f"第 {self.current_chapter} 章（根据上下文自然推进）"
+            else:
+                scene_prompt = (
+                    f"第 {self.current_chapter} 章上一稿评审未过（第 {round_n} 轮修订）。"
+                    f"请根据评审意见重写本章。\n\n"
+                    f"## 评审意见\n{review}\n\n"
+                    f"## 上一稿\n{chapter_text}\n\n"
+                    f"## 大纲内容\n{chapter_outline or '（根据上下文自然推进）'}"
+                )
+
+            await self._rate_limit_pause()
+            chapter_text = await writer.think(scene_prompt, context)
+            self._record_usage(writer)
+            if not chapter_text or chapter_text.startswith("[LLM API error"):
+                return f"## 第 {self.current_chapter} 章 ❌ 写作失败\n\n{chapter_text}"
+            self._log("scene_writer", f"Chapter {self.current_chapter} round {round_n}: {chapter_text[:100]}...")
+
+            # Step 2: Editor polish
+            await self._rate_limit_pause()
+            edited = await self.editor.think(
+                f"请润色第 {self.current_chapter} 章。保留所有内容, 只优化表达。\n\n" + chapter_text,
+                context,
+            )
+            self._record_usage(self.editor)
+            if not edited or edited.startswith("[LLM API error"):
+                edited = chapter_text  # 润色失败时退回原稿
+            self._log("editor", edited[:200])
+            self.knowledge.save_chapter(self.current_chapter, edited, "editor")
+
+            # Step 3: Continuity check（守卫哨兵，不污染日志）
+            await self._rate_limit_pause()
+            continuity = await self.continuity_keeper.think(
+                f"请检查第 {self.current_chapter} 章的一致性。\n\n" + edited,
+                context,
+            )
+            self._record_usage(self.continuity_keeper)
+            self._log("continuity_keeper", continuity)
+            self.knowledge.save_continuity_log(continuity)
+
+            # Step 4: Showrunner review — 要求首行输出结构化 VERDICT
+            await self._rate_limit_pause()
+            review = await self.showrunner.think(
+                f"请评审第 {self.current_chapter} 章。\n\n"
+                f"## 编辑后版本\n{edited[:3000]}\n\n"
+                f"## 连续性检查\n{continuity[:1000]}\n\n"
+                f"## 输出格式（必须严格遵守）\n"
+                f"第一行必须是 `VERDICT: PASS` 或 `VERDICT: REVISE` 或 `VERDICT: REJECT`，"
+                f"之后空一行再写评审意见。PASS=通过；REVISE=需修订；REJECT=严重偏离需重写。",
+            )
+            self._record_usage(self.showrunner)
+            self._log("showrunner", f"Review Ch{self.current_chapter} round {round_n}: {review[:200]}")
+
+            verdict = self._parse_review_verdict(review)
+            # 记录本轮评审（供事后审计）
+            self.knowledge.save_chapter_review(self.current_chapter, round_n, verdict, review)
+
+            if verdict == "PASS":
+                self.knowledge.save_chapter(self.current_chapter, edited, "editor_pass")
+                # 生成章节摘要（≤200 字）供后续章节 build_context 用，替代首段截断
+                await self._generate_chapter_summary(self.current_chapter, edited)
+                self._save_state()
+                rounds_desc = f"{round_n + 1} 轮" if round_n > 0 else "1 轮"
+                return f"## 第 {self.current_chapter} 章 ✅ 通过（{rounds_desc}）\n\n{edited}"
+            # REVISE / REJECT：进入下一轮重写（REJECT 视为更严重的 REVISE）
+
+        # 耗尽轮次仍非 PASS：交付 edited 但标警告
+        self.knowledge.save_chapter(self.current_chapter, edited, "editor_revise_exhausted")
+        # 耗尽轮次也生成摘要（交付版本仍有参考价值）
+        await self._generate_chapter_summary(self.current_chapter, edited)
+        self._save_state()
+        return (
+            f"## 第 {self.current_chapter} 章 ⚠️ 修订耗尽（{max_rounds} 轮未 PASS）\n\n"
+            f"## 最终评审\n{review}\n\n---\n\n## 交付版本\n{edited}"
         )
-        if not edited or edited.startswith("[LLM API error"):
-            edited = chapter_text  # 润色失败时退回原稿
-        self._log("editor", edited[:200])
-        self.knowledge.save_chapter(self.current_chapter, edited, "editor")
 
-        # Step 3: Continuity check
-        await self._rate_limit_pause()
-        continuity = await self.continuity_keeper.think(
-            f"请检查第 {self.current_chapter} 章的一致性。\n\n" + edited,
-            context,
-        )
-        self._log("continuity_keeper", continuity)
-        self.knowledge.save_continuity_log(continuity)
+    async def _generate_chapter_summary(self, chapter_num: int, chapter_text: str) -> None:
+        """用 literary_advisor（light_model）为章节生成 ≤200 字摘要并保存。
 
-        # Step 4: Showrunner review — 要求首行输出结构化 VERDICT
-        await self._rate_limit_pause()
-        review = await self.showrunner.think(
-            f"请评审第 {self.current_chapter} 章。\n\n"
-            f"## 编辑后版本\n{edited[:3000]}\n\n"
-            f"## 连续性检查\n{continuity[:1000]}\n\n"
-            f"## 输出格式（必须严格遵守）\n"
-            f"第一行必须是 `VERDICT: PASS` 或 `VERDICT: REVISE` 或 `VERDICT: REJECT`，"
-            f"之后空一行再写评审意见。PASS=通过；REVISE=需修订；REJECT=严重偏离需重写。",
-        )
-        self._log("showrunner", f"Review Ch{self.current_chapter}: {review[:200]}")
-
-        verdict = self._parse_review_verdict(review)
-        if verdict == "PASS":
-            return f"## 第 {self.current_chapter} 章 ✅ 通过\n\n{edited}"
-        elif verdict == "REJECT":
-            return f"## 第 {self.current_chapter} 章 ❌ 退回重写\n\n{review}\n\n---\n\n原稿:\n{chapter_text}"
-        else:
-            return f"## 第 {self.current_chapter} 章 🔄 需修订\n\n{review}\n\n---\n\n原稿:\n{chapter_text}"
+        失败不影响主流程（摘要缺失时 build_context 回退首段）。
+        """
+        try:
+            excerpt = chapter_text[:3000]
+            prompt = (
+                f"请为以下章节生成一段不超过 200 字的摘要，用于后续章节的上下文参考。\n"
+                f"要求：纯文本，无标题，无 markdown，无引导语；聚焦关键情节、人物动作、状态变化。\n\n"
+                f"## 第 {chapter_num} 章正文（节选）\n{excerpt}"
+            )
+            summary = await self.literary_advisor.think(prompt)
+            self._record_usage(self.literary_advisor)
+            # 截到 200 字以防 LLM 超长
+            if summary and not summary.startswith("[LLM API error"):
+                self.knowledge.save_chapter_summary(chapter_num, summary[:200])
+                self._log("literary_advisor", f"Summary Ch{chapter_num}: {summary[:80]}...")
+        except Exception as e:
+            logger.warning("生成第 %d 章摘要失败: %s", chapter_num, e)
 
     @staticmethod
     def _parse_review_verdict(review: str) -> str:
@@ -440,47 +643,106 @@ class StoryOrchestrator:
     async def phase_writing_parallel(
         self, start_chapter: int, count: int
     ) -> str:
-        """并行写作阶段: 多个 Scene Writer 同时写不同章节.
+        """并行写作阶段: 多个 Scene Writer 同时写不同章节，每章跑完整流水线
+        (scene → edit → continuity → review)，与串行 phase_writing 质量一致。
 
         Args:
             start_chapter: 起始章节号
             count: 要写的章节数（最多 scene_writers 数量）
         """
-        self.phase = "writing"
-        context = self.knowledge.build_context()
+        self._set_phase("writing")
         outline = self.knowledge.load_outline()
 
         # Limit to available writers
         writer_count = min(count, len(self.scene_writers))
         chapter_nums = list(range(start_chapter, start_chapter + writer_count))
 
-        # Build prompts for each chapter
-        async def write_chapter(writer: SceneWriter, ch_num: int) -> tuple[int, str]:
-            await self._rate_limit_pause()
+        # 每章任务构造专属 editor/continuity/showrunner 实例，避免共享
+        # _conversation_history 在并发下串扰（agent 是轻量对象，只持 prompt + client ref）
+        async def write_chapter_full(writer: SceneWriter, ch_num: int) -> tuple[int, str]:
+            # 每章独立 build_context（排除当前章），避免共享 pre-batch snapshot
+            context = self.knowledge.build_context(ch_num,
+                                                    max_chars=self.cfg.max_context_chars)
             ch_outline = self._extract_chapter_outline(outline, ch_num)
-            prompt = f"请撰写第 {ch_num} 章。\n\n## 大纲内容\n"
+            scene_prompt = f"请撰写第 {ch_num} 章。\n\n## 大纲内容\n"
             if ch_outline:
-                prompt += ch_outline
+                scene_prompt += ch_outline
             else:
-                prompt += f"第 {ch_num} 章（根据上下文自然推进）"
-            text = await writer.think(prompt, context)
-            return ch_num, text
+                scene_prompt += f"第 {ch_num} 章（根据上下文自然推进）"
 
-        # Parallel write
-        tasks = []
-        for i, ch_num in enumerate(chapter_nums):
-            tasks.append(write_chapter(self.scene_writers[i], ch_num))
+            await self._rate_limit_pause()
+            chapter_text = await writer.think(scene_prompt, context)
+            if not chapter_text or chapter_text.startswith("[LLM API error"):
+                return ch_num, f"## 第 {ch_num} 章 ❌ 写作失败\n{chapter_text}"
 
-        results = await asyncio.gather(*tasks)
+            # 专属 editor
+            ed = Editor(
+                "编辑", "Editor", "文字润色",
+                self.client, model=self.cfg.main_model, temperature=0.5,
+            )
+            await self._rate_limit_pause()
+            edited = await ed.think(
+                f"请润色第 {ch_num} 章。保留所有内容, 只优化表达。\n\n" + chapter_text,
+                context,
+            )
+            if not edited or edited.startswith("[LLM API error"):
+                edited = chapter_text
+
+            # 专属 continuity_keeper（守卫哨兵，不污染日志）
+            ck = ContinuityKeeper(
+                "连续性检查员", "Continuity Keeper", "一致性检查",
+                self.client, model=self.cfg.main_model, temperature=0.4,
+            )
+            await self._rate_limit_pause()
+            continuity = await ck.think(
+                f"请检查第 {ch_num} 章的一致性。\n\n" + edited, context,
+            )
+            if continuity and not continuity.startswith("[LLM API error"):
+                self.knowledge.save_continuity_log(continuity)
+
+            # 专属 showrunner review
+            sr = Showrunner(
+                "总策划", "Showrunner", "主持创作流程, 分配任务, 评审产出",
+                self.client, model=self.cfg.main_model, temperature=0.6,
+            )
+            await self._rate_limit_pause()
+            review = await sr.think(
+                f"请评审第 {ch_num} 章。\n\n"
+                f"## 编辑后版本\n{edited[:3000]}\n\n"
+                f"## 连续性检查\n{continuity[:1000]}\n\n"
+                f"## 输出格式（必须严格遵守）\n"
+                f"第一行必须是 `VERDICT: PASS` 或 `VERDICT: REVISE` 或 `VERDICT: REJECT`，"
+                f"之后空一行再写评审意见。",
+            )
+            verdict = self._parse_review_verdict(review)
+
+            # 存盘：edited 版本（与串行一致）
+            self.knowledge.save_chapter(ch_num, edited, "editor")
+            self._log("scene_writer", f"Chapter {ch_num} (parallel): verdict={verdict}")
+
+            if verdict == "PASS":
+                return ch_num, f"## 第 {ch_num} 章 ✅ 通过\n\n{edited}"
+            elif verdict == "REJECT":
+                return ch_num, f"## 第 {ch_num} 章 ❌ 退回重写\n\n{review}\n\n---\n\n原稿:\n{chapter_text}"
+            else:
+                return ch_num, f"## 第 {ch_num} 章 🔄 需修订\n\n{review}\n\n---\n\n原稿:\n{chapter_text}"
+
+        # 并行执行；return_exceptions=True 避免单章异常杀死整批
+        tasks = [
+            write_chapter_full(self.scene_writers[i], ch_num)
+            for i, ch_num in enumerate(chapter_nums)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
         output_parts = []
-        for ch_num, text in results:
-            if not text or text.startswith("[LLM API error"):
-                output_parts.append(f"## 第 {ch_num} 章 ❌ 写作失败\n{text}")
+        for r in results:
+            if isinstance(r, Exception):
+                # 单章异常：log + 跳过，不影响其它章
+                logger.exception("并行写作单章异常: %s", r)
+                output_parts.append(f"## ❌ 并行写作异常\n{r}")
                 continue
-            self._log("scene_writer", f"Chapter {ch_num}: {text[:100]}...")
-            self.knowledge.save_chapter(ch_num, text, "scene_writer")
-            output_parts.append(f"## 第 {ch_num} 章 (初稿)\n{text}")
+            ch_num, text = r
+            output_parts.append(text)
 
         return "\n\n---\n\n".join(output_parts)
 
@@ -492,51 +754,100 @@ class StoryOrchestrator:
         Args:
             review_criteria: 可选的项目专属评审标准（附加到终审 prompt），
                 例如玉璧之战的"荡气回肠、突出战争残酷"等要求。不传则用通用评审。
+
+        终审硬门：若 Showrunner 终审非 PASS，重跑 final_edit 最多 max_rounds 次；
+        仍非 PASS 则在 _final.md 头部插警告但仍交付（不卡死流程）。
         """
-        self.phase = "complete"
+        self._set_phase("complete")
         full_text = self.knowledge.get_all_chapters_text()
-        context = self.knowledge.build_context()
+        context = self.knowledge.build_context(max_chars=self.cfg.max_context_chars)
 
-        # Final edit pass
-        await self._rate_limit_pause()
-        final_edit = await self.editor.think(
-            "请对整个作品做最后一轮全文润色。关注整体文风统一。\n\n" + full_text,
-            context,
-        )
-        self._log("editor", "Final edit complete")
+        max_rounds = max(1, self.cfg.max_rounds)
+        final_edit = full_text
+        final_review = ""
+        final_verdict = "REVISE"
+        rounds_taken = 0
 
-        # Final continuity
-        await self._rate_limit_pause()
-        final_cont = await self.continuity_keeper.think(
-            "请对全文做最终连续性检查。\n\n" + final_edit[:5000],
-            context,
-        )
-        self._log("continuity_keeper", final_cont)
+        for round_n in range(max_rounds):
+            rounds_taken = round_n + 1
+            # Final edit pass
+            await self._rate_limit_pause()
+            final_edit = await self.editor.think(
+                "请对整个作品做最后一轮全文润色。关注整体文风统一。\n\n" + full_text,
+                context,
+            )
+            self._record_usage(self.editor)
+            if not final_edit or final_edit.startswith("[LLM API error"):
+                final_edit = full_text  # 润色失败退回原稿
+            self._log("editor", f"Final edit complete (round {round_n})")
 
-        # Final approval — 可附加项目专属评审标准
-        await self._rate_limit_pause()
-        review_prompt = "请对整部作品进行终审，确认交付。\n\n"
-        if review_criteria:
-            review_prompt += f"## 评审标准\n{review_criteria}\n\n"
-        review_prompt += f"## 作品正文（节选）\n{final_edit[:5000]}"
-        final_review = await self.showrunner.think(review_prompt, context)
-        self._log("showrunner", final_review)
+            # Final continuity
+            await self._rate_limit_pause()
+            final_cont = await self.continuity_keeper.think(
+                "请对全文做最终连续性检查。\n\n" + final_edit[:5000],
+                context,
+            )
+            self._record_usage(self.continuity_keeper)
+            self._log("continuity_keeper", final_cont)
+
+            # Final approval — 可附加项目专属评审标准
+            await self._rate_limit_pause()
+            review_prompt = (
+                "请对整部作品进行终审，确认交付。\n\n"
+                "## 输出格式（必须严格遵守）\n"
+                "第一行必须是 `VERDICT: PASS` 或 `VERDICT: REVISE` 或 `VERDICT: REJECT`，"
+                "之后空一行再写评审意见。\n\n"
+            )
+            if review_criteria:
+                review_prompt += f"## 评审标准\n{review_criteria}\n\n"
+            review_prompt += f"## 作品正文（节选）\n{final_edit[:5000]}"
+            final_review = await self.showrunner.think(review_prompt, context)
+            self._record_usage(self.showrunner)
+            self._log("showrunner", f"Final review (round {round_n}): {final_review[:200]}")
+
+            final_verdict = self._parse_review_verdict(final_review)
+            if final_verdict == "PASS":
+                break
+            # 非 PASS：若有下一轮，把评审意见带入下一轮 final_edit
+            if round_n < max_rounds - 1:
+                full_text = (
+                    f"上一轮终审未过（{final_verdict}），评审意见：\n{final_review}\n\n"
+                    f"---\n\n请基于以上意见重润色：\n\n{full_text}"
+                )
 
         # Save final markdown (润色版，保留 markdown)
         out_dir = Path(self.cfg.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         project = self.project_name or "story"
         output_path = out_dir / f"{project}_final.md"
-        output_path.write_text(final_edit, encoding="utf-8")
+
+        if final_verdict != "PASS":
+            # 耗尽轮次仍非 PASS：头部插警告但仍交付
+            warning = (
+                f"> ⚠️ 终审未通过（耗尽 {rounds_taken} 轮，最终 VERDICT: {final_verdict}）\n"
+                f"> {final_review[:300]}\n\n---\n\n"
+            )
+            output_path.write_text(warning + final_edit, encoding="utf-8")
+        else:
+            output_path.write_text(final_edit, encoding="utf-8")
+
+        self._save_state()
 
         # ── 新增交付物：清洗版 TXT + 内容简介 + 封面提示词 ──
         delivery = await self._finalize_delivery(full_text)
 
+        verdict_emoji = "✅" if final_verdict == "PASS" else "⚠️"
         summary = (
-            f"## 终审\n{final_review}\n\n"
+            f"## 终审 {verdict_emoji}（{rounds_taken} 轮，VERDICT: {final_verdict}）\n{final_review}\n\n"
             f"## 输出\n- 润色版 MD: {output_path}\n"
             f"{delivery}"
         )
+        # 关闭共享连接池（项目完结，不再有 LLM 调用）
+        if hasattr(self.client, "aclose"):
+            try:
+                await self.client.aclose()
+            except Exception as e:
+                logger.warning("关闭 LLM 连接池失败: %s", e)
         return summary
 
     async def _finalize_delivery(self, full_text: str) -> str:
@@ -631,7 +942,7 @@ class StoryOrchestrator:
             "## 章节内容摘要\n"
             + "\n".join(chapter_summaries)
         )
-        response = await self.title_designer.think(prompt, model=self.cfg.light_model)
+        response = await self.title_designer.think(prompt)
         self._log("title_designer", f"Chapter titles: {response[:200]}")
 
         titles: dict[int, str] = {}
@@ -883,7 +1194,7 @@ class StoryOrchestrator:
         agent = self.agents.get(agent_name)
         if not agent:
             return f"未知 Agent: {agent_name}，可用: {', '.join(self.agents.keys())}"
-        context = self.knowledge.build_context()
+        context = self.knowledge.build_context(max_chars=self.cfg.max_context_chars)
         return await agent.think(message, context)
 
     async def _team_discussion(self, topic: str) -> str:
@@ -1003,4 +1314,34 @@ class StoryOrchestrator:
             "current_chapter": self.current_chapter,
             "model": self.cfg.main_model,
             "light_model": self.cfg.light_model,
+            "cost": self._cost_summary(),
         }
+
+    def _cost_summary(self) -> dict:
+        """返回可读的累计成本摘要。"""
+        by_model = dict(self.run_cost)
+        total_calls = sum(b.get("calls", 0) for b in by_model.values())
+        total_tokens = sum(b.get("total_tokens", 0) for b in by_model.values())
+        return {
+            "by_model": by_model,
+            "total_calls": total_calls,
+            "total_tokens": total_tokens,
+        }
+
+    def _infer_phase_from_disk(self) -> str:
+        """从盘上现有产物推断当前 phase。
+
+        /next 在 phase=="idle" 但 run_state 缺失/陈旧时调用，让用户能从已有
+        产物继续，而不是被卡在 "未创建项目" 提示里。
+        推断顺序（从后往前）：有 final.md → complete；有章节 → writing；
+        有 outline → outlining；有 world/character → building；否则 idle。
+        """
+        if (self.knowledge.story_dir / "final.md").exists():
+            return "complete"
+        if self.knowledge.list_chapters():
+            return "writing"
+        if self.knowledge.load_outline().strip():
+            return "outlining"
+        if self.knowledge.list_world_docs() or self.knowledge.list_characters():
+            return "building"
+        return "idle"

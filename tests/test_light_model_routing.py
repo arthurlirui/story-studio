@@ -1,8 +1,17 @@
-"""单元测试：meta 任务（章节标题/简介/封面 brief）路由到 light_model，
-正文润色/连续性/终审仍用 main_model。
+"""单元测试：per-agent 模型路由。
+
+Stage 3.1 策略：
+- main tier：scene_writer / showrunner / world_architect / character_designer → main_model
+- light tier：editor / continuity_keeper / title_designer / hooker / climax_designer
+              / literary_advisor → light_model
+
+phase_complete 路径里：
+- 终审 (showrunner) → main_model
+- final edit (editor) / 最终连续性 (continuity_keeper) → light_model
+- meta 任务（章节标题/简介/封面 brief，由 showrunner/literary_advisor 担纲）→ light_model
 
 用 RecordingLLMClient 记录每次 chat 收到的 model 参数，按 prompt 关键词
-分类断言：meta 调用用 light_model，核心创作调用用 main_model。
+分类断言各调用走对模型。
 
 不依赖 pytest-asyncio：用 asyncio.new_event_loop() 驱动。
 """
@@ -10,12 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import StudioConfig
 from orchestrator import StoryOrchestrator
@@ -82,6 +89,28 @@ def orch(tmp_path):
     return o
 
 
+@pytest.fixture
+def orch_unified_model(tmp_path):
+    """light_model == main_model 的 orchestrator（模拟未配置 light 的场景）。"""
+    cfg = StudioConfig(
+        backend="llm",
+        llm_api_key="fake",
+        knowledge_dir=str(tmp_path / "knowledge"),
+        output_dir=str(tmp_path / "output"),
+        scene_writers=1,
+        main_model="main-model-x",
+        light_model="main-model-x",
+    )
+    client = RecordingLLMClient()
+    o = StoryOrchestrator(cfg, client=client)
+    async def _no_pause():
+        return None
+    o._rate_limit_pause = _no_pause
+    o.project_name = "测试小说"
+    o.knowledge.save_chapter(1, "# 第1章\n\n正文。\n", "scene_writer")
+    return o
+
+
 def _classify(prompt: str) -> str:
     """根据 prompt 关键词归类为 meta / core。"""
     if "最后一轮全文润色" in prompt:
@@ -110,36 +139,75 @@ async def _meta_calls_use_light_model(orch):
         kind = _classify(prompt)
         by_kind.setdefault(kind, []).append(model)
 
-    # meta 任务必须用 light_model
-    for kind in ("meta_titles", "meta_synopsis", "meta_cover"):
+    # light tier 任务必须用 light_model：
+    # meta（标题/简介/封面）+ editor 润色 + continuity 连续性检查
+    light_kinds = ("meta_titles", "meta_synopsis", "meta_cover",
+                   "core_edit", "core_continuity")
+    for kind in light_kinds:
         assert kind in by_kind, f"缺少 {kind} 调用"
         for m in by_kind[kind]:
             assert m == light, f"{kind} 应使用 light_model({light})，实际 {m}"
 
-    # 核心创作调用必须用 main_model
-    for kind in ("core_edit", "core_continuity", "core_review"):
-        assert kind in by_kind, f"缺少 {kind} 调用"
-        for m in by_kind[kind]:
-            assert m == main, f"{kind} 应使用 main_model({main})，实际 {m}"
+    # main tier：终审 (showrunner) 必须用 main_model
+    assert "core_review" in by_kind, "缺少 core_review 调用"
+    for m in by_kind["core_review"]:
+        assert m == main, f"core_review 应使用 main_model({main})，实际 {m}"
 
 
 def test_meta_calls_use_light_model(orch):
     _run(_meta_calls_use_light_model(orch))
 
 
-async def _default_when_light_model_unset(orch):
-    # light_model 默认等于 main_model 时，meta 调用也用 main_model（不报错）
-    orch.cfg.light_model = orch.cfg.main_model
+async def _default_when_light_model_unset(orch_unified_model):
+    # light_model == main_model 时，所有 tier 都回退到 main_model（不报错）
+    orch = orch_unified_model
     await orch.phase_complete()
-    # 所有调用都应是 main_model
+    # 所有调用都应是 main_model（light 回退到 main）
     for prompt, model in orch.client.calls:
         assert model == orch.cfg.main_model, (
             f"light_model==main_model 时应用 main_model，实际 {model} (prompt: {prompt[:30]!r})"
         )
 
 
-def test_default_when_light_model_unset(orch):
-    _run(_default_when_light_model_unset(orch))
+def test_default_when_light_model_unset(orch_unified_model):
+    _run(_default_when_light_model_unset(orch_unified_model))
+
+
+async def _agent_models_override_takes_priority(tmp_path):
+    """agent_models 显式指定某 agent 的模型时，应覆盖 tier 默认。"""
+    cfg = StudioConfig(
+        backend="llm",
+        llm_api_key="fake",
+        knowledge_dir=str(tmp_path / "knowledge"),
+        output_dir=str(tmp_path / "output"),
+        scene_writers=1,
+        main_model="main-model-x",
+        light_model="light-model-y",
+        agent_models={"editor": "custom-editor-model"},
+    )
+    client = RecordingLLMClient()
+    orch = StoryOrchestrator(cfg, client=client)
+
+    async def _no_pause():
+        return None
+
+    orch._rate_limit_pause = _no_pause
+    orch.project_name = "测试小说"
+    orch.knowledge.save_chapter(1, "# 第1章\n\n正文。\n", "scene_writer")
+    await orch.phase_complete()
+    # editor 的 final edit 调用应走 custom-editor-model
+    found_custom = False
+    for prompt, model in orch.client.calls:
+        if "最后一轮全文润色" in prompt:
+            assert model == "custom-editor-model", (
+                f"agent_models 覆盖应优先，实际 {model}"
+            )
+            found_custom = True
+    assert found_custom, "缺少 editor final edit 调用"
+
+
+def test_agent_models_override_takes_priority(tmp_path):
+    _run(_agent_models_override_takes_priority(tmp_path))
 
 
 if __name__ == "__main__":

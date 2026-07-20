@@ -36,6 +36,8 @@ class Agent(ABC):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self._conversation_history: list[dict[str, str]] = []
+        # 最近一次 LLM 调用的 token 用量（从 client.last_usage 拷贝），供上层核算成本
+        self.last_usage: dict[str, int] | None = None
 
     @property
     @abstractmethod
@@ -67,6 +69,10 @@ class Agent(ABC):
             max_tokens=self.max_tokens,
             system=system,
         )
+
+        # 拷贝 client 最近一次 usage 到 self，供上层聚合成本（client 可能是共享实例）
+        client_usage = getattr(self.client, "last_usage", None)
+        self.last_usage = dict(client_usage) if client_usage else None
 
         self._conversation_history.append({"role": "user", "content": prompt})
         self._conversation_history.append({"role": "assistant", "content": response})

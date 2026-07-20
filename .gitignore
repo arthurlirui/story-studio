@@ -35,3 +35,13 @@ characters/_Volcengine_API_error__None_.md
 
 # OpenClaw internal
 .openclaw/
+
+# Secrets — never commit real settings or env files
+config/settings.yaml
+.env
+
+# Job runner working directory (per-run artifacts, large)
+jobs/
+
+# ZCode working files
+.zcode/

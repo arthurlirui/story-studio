@@ -15,13 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
 # 让 tests/ 能 import 项目根模块
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import StudioConfig
 from orchestrator import StoryOrchestrator, DEFAULT_AUTHOR
@@ -75,7 +73,8 @@ class FakeLLMClient:
         if "为以下每一章设计" in prompt and "章节标题" in prompt:
             return "第1章：觉醒\n"
         # 5. 内容简介
-        if "不超过 500 字的内容简介" in prompt:
+        # 注意：orchestrator 的 prompt 是 "**不超过 500 字**的内容简介"（含 markdown 星号）
+        if "内容简介" in prompt and "500 字" in prompt:
             return (
                 "陈风在乱世中觉醒，凭一柄破剑闯荡江湖，"
                 "历经血战与背叛，最终直面宿命之敌。"
@@ -168,6 +167,8 @@ async def _phase_complete_produces_all_deliverables(orch):
     assert synopsis_path.exists(), f"内容简介未生成: {synopsis_path}"
     synopsis = synopsis_path.read_text(encoding="utf-8")
     assert len(synopsis) <= 500, f"简介超 500 字: {len(synopsis)}"
+    # 验证内容真的来自 synopsis 分支（不是兜底串或 LLM 错误哨兵）
+    assert "陈风" in synopsis, f"简介内容未来自 synopsis 分支: {synopsis!r}"
 
     # 4. 封面 brief JSON
     brief_path = out_dir / "covers" / "cover_brief.json"
