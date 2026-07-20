@@ -43,8 +43,12 @@ class Agent(ABC):
         """Agent 的系统提示词."""
         ...
 
-    async def think(self, prompt: str, context: str = "") -> str:
-        """思考并回复。"""
+    async def think(self, prompt: str, context: str = "", model: str | None = None) -> str:
+        """思考并回复。
+
+        model: 可选模型名覆盖，用于把 meta 任务（标题/简介/封面 brief 等）
+            路由到更便宜的 light_model。None 时用 agent 默认 self.model。
+        """
         system = self.system_prompt
         if context:
             system = f"{system}\n\n## 当前已知信息\n\n{context}"
@@ -58,7 +62,7 @@ class Agent(ABC):
 
         response = await self.client.chat(
             messages=messages,
-            model=self.model,
+            model=model or self.model,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             system=system,

@@ -284,6 +284,92 @@ def test_phase_complete_with_review_criteria(orch):
     _run(_phase_complete_with_review_criteria(orch))
 
 
+# ── 简介优雅截断测试 ────────────────────────────────────────
+
+
+class LongSynopsisFakeLLM(FakeLLMClient):
+    """返回超长简介，验证 _truncate_at_sentence 在句末标点处断开。"""
+
+    def __init__(self, synopsis_text: str):
+        super().__init__()
+        self._synopsis = synopsis_text
+
+    def _respond(self, prompt: str) -> str:
+        # 简介请求的 prompt 含 "撰写一段**不超过 500 字**的内容简介"
+        if "内容简介" in prompt and "500 字" in prompt:
+            return self._synopsis
+        return super()._respond(prompt)
+
+
+@pytest.fixture
+def orch_with_long_synopsis(tmp_path):
+    """构造一个返回指定长简介的 orchestrator。"""
+    def _make(synopsis_text: str) -> StoryOrchestrator:
+        cfg = StudioConfig(
+            backend="llm",
+            llm_api_key="fake",
+            knowledge_dir=str(tmp_path / "knowledge"),
+            output_dir=str(tmp_path / "output"),
+            scene_writers=1,
+        )
+        client = LongSynopsisFakeLLM(synopsis_text)
+        o = StoryOrchestrator(cfg, client=client)
+        async def _no_pause():
+            return None
+        o._rate_limit_pause = _no_pause
+        o.project_name = "测试小说"
+        o.knowledge.save_chapter(
+            1,
+            "# 第 1 章 觉醒\n\n陈风睁开眼。\n",
+            author="scene_writer",
+        )
+        return o
+    return _make
+
+
+async def _synopsis_truncates_at_sentence(orch_with_long_synopsis):
+    # 600 字带句号：应在最后一个句号处截断，且 ≤500
+    sentence = "陈风在乱世中觉醒，凭一柄破剑闯荡江湖。"  # 20 字
+    long_text = (sentence * 35).strip()  # ~700 字，多个句号
+    orch = orch_with_long_synopsis(long_text)
+    await orch.phase_complete()
+    synopsis = Path(orch.cfg.output_dir, "测试小说_synopsis.txt").read_text(encoding="utf-8")
+    assert len(synopsis) <= 500, f"简介超 500 字: {len(synopsis)}"
+    # 应在句号处截断，结尾是句号
+    assert synopsis.endswith("。"), f"应在句号处截断，实际结尾: {synopsis[-20:]!r}"
+
+
+def test_synopsis_truncates_at_sentence(orch_with_long_synopsis):
+    _run(_synopsis_truncates_at_sentence(orch_with_long_synopsis))
+
+
+async def _synopsis_truncates_no_punctuation(orch_with_long_synopsis):
+    # 600 字无标点长串：硬截断到 500 字
+    long_text = "陈风" * 400  # 800 字无标点
+    orch = orch_with_long_synopsis(long_text)
+    await orch.phase_complete()
+    synopsis = Path(orch.cfg.output_dir, "测试小说_synopsis.txt").read_text(encoding="utf-8")
+    assert len(synopsis) <= 500, f"简介超 500 字: {len(synopsis)}"
+    assert len(synopsis) > 0
+
+
+def test_synopsis_truncates_no_punctuation(orch_with_long_synopsis):
+    _run(_synopsis_truncates_no_punctuation(orch_with_long_synopsis))
+
+
+async def _synopsis_short_unchanged(orch_with_long_synopsis):
+    # 短简介（≤500）原样保留，不触发截断
+    short_text = "这是一个短简介，不超过五百字，应原样保留。"
+    orch = orch_with_long_synopsis(short_text)
+    await orch.phase_complete()
+    synopsis = Path(orch.cfg.output_dir, "测试小说_synopsis.txt").read_text(encoding="utf-8")
+    assert synopsis == short_text, f"短简介被误改: {synopsis!r}"
+
+
+def test_synopsis_short_unchanged(orch_with_long_synopsis):
+    _run(_synopsis_short_unchanged(orch_with_long_synopsis))
+
+
 if __name__ == "__main__":
     import pytest as _pytest
     raise SystemExit(_pytest.main([__file__, "-v"]))

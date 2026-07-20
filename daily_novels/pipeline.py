@@ -212,7 +212,7 @@ def maybe_generate_cover(novel_path: Path, direction: dict) -> dict | None:
             str(WORKSPACE.parent / "tools" / "book_cover_comfy.py"),
             "--title", meta.get("title") or novel_path.stem,
             "--subtitle", direction.get("name", ""),
-            "--author", os.environ.get("COVER_AUTHOR", "Arthur 著"),
+            "--author", os.environ.get("COVER_AUTHOR", "独孤元景 著"),
             "--novel-file", str(novel_path),
             "--output-dir", str(WORKSPACE.parent / "output" / "covers"),
         ]

@@ -33,6 +33,23 @@ DEFAULT_AUTHOR = "独孤元景 著"
 _COVER_TOOL = Path(__file__).resolve().parent / "tools" / "book_cover_comfy.py"
 
 
+def _truncate_at_sentence(text: str, max_len: int) -> str:
+    """把超长文本截断到 ≤ max_len，优先在句末标点处断开。
+
+    在前 max_len 字符内倒序找最近的句末标点（。！？；.!?），
+    找到且位置不早于 max_len 的一半，则截到该标点之后；
+    否则硬截断到 max_len。
+    """
+    if len(text) <= max_len:
+        return text
+    cut = text[:max_len]
+    for sep in ("。", "！", "？", "；", ".", "!", "?"):
+        idx = cut.rfind(sep)
+        if idx >= max_len // 2:
+            return cut[: idx + 1]
+    return cut
+
+
 class StoryOrchestrator:
     """
     创作编排器 — Agent 团队的指挥中心.
@@ -287,7 +304,33 @@ class StoryOrchestrator:
         self._log("showrunner", final_outline)
 
         self.knowledge.save_outline(final_outline)
+
+        # 从大纲中解析书名，回写 project_name（已设值则不覆盖）
+        title = self._parse_book_title(final_outline)
+        if title and not self.project_name:
+            self.project_name = title
+            logger.info("从大纲解析到书名: %s", title)
+
         return final_outline
+
+    @staticmethod
+    def _parse_book_title(outline: str) -> str | None:
+        """从大纲文本中提取书名。返回纯书名（不含《》），解析失败返回 None。
+
+        优先匹配 "## 推荐主标题" 区块下的第一个《...》；
+        失败再回退到 "书名候选" 区块的第一个《...》。
+        """
+        if not outline:
+            return None
+        # 1. "推荐主标题" 区块：取该标题后 80 字内的第一个书名号
+        m = re.search(r'推荐主标题[\s\S]{0,80}?《([^》]+)》', outline)
+        if m:
+            return m.group(1).strip()
+        # 2. "书名候选" 区块回退
+        m = re.search(r'书名候选[\s\S]{0,200}?《([^》]+)》', outline)
+        if m:
+            return m.group(1).strip()
+        return None
 
     # ── Phase 4: 写作 (支持并行) ──────────────────────────────
 
@@ -588,7 +631,7 @@ class StoryOrchestrator:
             "## 章节内容摘要\n"
             + "\n".join(chapter_summaries)
         )
-        response = await self.title_designer.think(prompt)
+        response = await self.title_designer.think(prompt, model=self.cfg.light_model)
         self._log("title_designer", f"Chapter titles: {response[:200]}")
 
         titles: dict[int, str] = {}
@@ -656,14 +699,14 @@ class StoryOrchestrator:
             "4. 直接输出简介正文，不要任何引导语\n\n"
             "## 作品正文（节选）\n" + excerpt
         )
-        response = await self.showrunner.think(prompt)
+        response = await self.showrunner.think(prompt, model=self.cfg.light_model)
         self._log("showrunner", f"Synopsis: {response[:200]}")
         # 去标记 + 截断
         synopsis = clean_chapter_body(response)
         # 去掉可能残留的换行（简介应是单段连续文本）
         synopsis = " ".join(synopsis.split())
         if len(synopsis) > 500:
-            synopsis = synopsis[:500]
+            synopsis = _truncate_at_sentence(synopsis, 500)
         return synopsis
 
     async def _generate_cover_brief(
@@ -708,7 +751,7 @@ class StoryOrchestrator:
             f"## 内容简介\n{synopsis}\n\n"
             f"## 作品正文（节选）\n{excerpt}"
         )
-        response = await self.showrunner.think(prompt)
+        response = await self.showrunner.think(prompt, model=self.cfg.light_model)
         self._log("showrunner", f"Cover brief: {response[:200]}")
 
         # 解析 JSON（容错：提取首个 {...}）
@@ -796,6 +839,7 @@ class StoryOrchestrator:
         """用 --dry-run 调用 book_cover_comfy.py 生成 workflow JSON（不连 ComfyUI）。
 
         失败只 log warning，不抛异常。返回 workflow JSON 路径或 None。
+        只返回本次 dry-run 新产出的 workflow 文件，避免拾取目录里残留的旧文件。
         """
         covers_dir = out_dir / "covers"
         cmd = [
@@ -805,6 +849,8 @@ class StoryOrchestrator:
             "--output-dir", str(covers_dir),
             "--dry-run",
         ]
+        # 记录调用前已有的 workflow 文件，调用后只从新增文件里挑
+        existing = set(covers_dir.glob("*_workflow.json"))
         try:
             proc = await asyncio.to_thread(
                 subprocess.run,
@@ -820,11 +866,11 @@ class StoryOrchestrator:
                     proc.returncode, (proc.stderr or proc.stdout)[-500:],
                 )
                 return None
-            # book_cover_comfy.py 输出多行，最后可能含 JSON 行；dry-run 不输出 JSON，
-            # 但会写入 {stem}_workflow.json。查找最新 workflow 文件。
-            workflows = sorted(covers_dir.glob("*_workflow.json"), key=lambda p: p.stat().st_mtime)
-            if workflows:
-                return workflows[-1]
+            # 优先返回本次新产出的 workflow；为空则回退到全目录最新（容错）
+            new_files = list(set(covers_dir.glob("*_workflow.json")) - existing)
+            candidates = new_files or list(covers_dir.glob("*_workflow.json"))
+            if candidates:
+                return sorted(candidates, key=lambda p: p.stat().st_mtime)[-1]
             return None
         except Exception as e:
             logger.warning("封面 dry-run 异常: %s", e)

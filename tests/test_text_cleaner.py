@@ -115,6 +115,56 @@ class TestCleanChapterBody:
         # 行首有空格仍应被识别为段落编号
         assert clean_chapter_body("  1. 第一段") == "第一段"
 
+    def test_bracket_end_marker_removed(self):
+        # 全角方括号章末标记 【第一章完】/【完】
+        text = "正文内容\n\n【第一章完】\n后续"
+        out = clean_chapter_body(text)
+        assert "【" not in out, "TXT 仍含 【】 章末标记"
+        assert "完】" not in out
+        assert "正文内容" in out and "后续" in out
+
+    def test_bracket_end_marker_simple(self):
+        # 仅 【完】 也应被去除
+        assert "完】" not in clean_chapter_body("正文。\n\n【完】\n")
+
+    def test_self_check_block_removed(self):
+        # LLM 自检块：## 章节自检 + task list 行，整块剥离
+        text = (
+            "正文段落一。\n\n"
+            "## 章节自检\n"
+            "- [x] 爽点：主角觉醒\n"
+            "- [ ] 字数：约5200字\n\n"
+            "下一章开始。"
+        )
+        out = clean_chapter_body(text)
+        assert "章节自检" not in out, "TXT 仍含自检块标题"
+        assert "爽点" not in out, "TXT 仍含自检块元信息"
+        assert "[x]" not in out and "[ ]" not in out
+        assert "正文段落一" in out and "下一章开始" in out
+
+    def test_self_check_block_variant_name(self):
+        # "## 自检"（不带"章节"）也应被剥离
+        text = "正文。\n\n## 自检\n- [x] 检查通过\n\n结尾。"
+        out = clean_chapter_body(text)
+        assert "自检" not in out
+        assert "检查通过" not in out
+        assert "正文" in out and "结尾" in out
+
+    def test_task_list_marker_removed(self):
+        # 散落的 task list 行（不在自检块内）也应去除
+        text = "正文一。\n\n- [x] 某个 checklist 项\n\n正文二。"
+        out = clean_chapter_body(text)
+        assert "[x]" not in out
+        assert "checklist" not in out
+        assert "正文一" in out and "正文二" in out
+
+    def test_normal_bullet_list_preserved(self):
+        # 普通无序列表（- 项，无 [x]）不应被误删
+        text = "正文。\n\n- 普通列表项\n- 另一项\n\n结尾。"
+        out = clean_chapter_body(text)
+        assert "普通列表项" in out, "普通列表项被误删"
+        assert "另一项" in out
+
 
 # ── strip_existing_title ─────────────────────────────────────
 
