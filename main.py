@@ -47,8 +47,10 @@ def help_text():
   /phase               — 查看当前阶段
   /next                — 进入下一阶段
   /write [章节号]       — 写指定章节（默认下一章）
+  /batch [起] [数]      — 批次并行写作（默认从下一章起，数=batch_size）
   /review <章节号>      — 审阅章节
   /revise <章节号> <指令> — 指定修改方向后重写
+  /worklog [条数]       — 查看智能体工作记录（默认 20 条）
 
   💬 Agent 对话
   /chat <agent> <消息>  — 直接与某个 Agent 对话
@@ -203,6 +205,59 @@ async def _dispatch_command(raw: str, orchestrator: StoryOrchestrator) -> bool:
         print(f"\n✍️ 写作中...")
         result = await orchestrator.phase_writing(chapter_num)
         print(f"\n✅ {result[:1500]}...")
+        return False
+
+    if raw.startswith("/batch"):
+        parts = raw.split()
+        start = None
+        count = None
+        if len(parts) >= 2:
+            start = _parse_int(parts[1], "起始章节号")
+            if start is None:
+                print("用法: /batch [起始章节号] [章节数]")
+                return False
+        if len(parts) >= 3:
+            count = _parse_int(parts[2], "章节数")
+            if count is None:
+                print("用法: /batch [起始章节号] [章节数]")
+                return False
+        # 默认：从 current_chapter+1 开始，count=cfg.batch_size
+        if start is None:
+            chapters = orchestrator.knowledge.list_chapters()
+            start = (chapters[-1] if chapters else 0) + 1
+        if count is None:
+            count = orchestrator.cfg.batch_size
+        print(f"\n🚀 批次并行写作：第 {start} 章起，共 {count} 章...")
+        result = await orchestrator.phase_writing_batch(start, count)
+        print(f"\n✅ {result[:2000]}...")
+        return False
+
+    if raw.startswith("/worklog"):
+        parts = raw.split()
+        n = 20
+        if len(parts) > 1:
+            parsed = _parse_int(parts[1], "条数")
+            if parsed is None:
+                print("用法: /worklog [条数]")
+                return False
+            n = max(1, parsed)
+        entries = orchestrator.worklog.read_recent(n)
+        if not entries:
+            print(f"\n📝 工作记录（最近 {n} 条）: (暂无记录)\n")
+            return False
+        print(f"\n📝 工作记录（最近 {len(entries)} 条）:")
+        print(f"{'时间':<20} {'agent':<18} {'action':<10} {'ch':<4} {'verdict':<8} 摘要")
+        print("-" * 100)
+        for e in entries:
+            ts = (e.get("ts") or "")[:19]
+            agent = (e.get("agent") or "")[:18]
+            action = (e.get("action") or "")[:10]
+            ch = e.get("chapter")
+            ch_s = str(ch) if ch is not None else "-"
+            verdict = (e.get("verdict") or "-")[:8]
+            excerpt = (e.get("excerpt") or "").replace("\n", " ")[:40]
+            print(f"{ts:<20} {agent:<18} {action:<10} {ch_s:<4} {verdict:<8} {excerpt}")
+        print()
         return False
 
     if raw.startswith("/chat "):

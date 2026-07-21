@@ -244,6 +244,27 @@ class KnowledgeStore:
             return filepath.read_text(encoding="utf-8")
         return ""
 
+    # ── Batch briefs (并行批次协调简报) ────────────────────────
+
+    def save_batch_brief(self, batch_id: str, data: dict) -> None:
+        """持久化批次简报到 story/batch_briefs/<batch_id>.json 供事后审计。"""
+        import json as _json
+        briefs_dir = self.story_dir / "batch_briefs"
+        briefs_dir.mkdir(parents=True, exist_ok=True)
+        filepath = briefs_dir / f"{batch_id}.json"
+        _atomic_write_text(filepath, _json.dumps(data, ensure_ascii=False, indent=2))
+
+    def load_batch_brief(self, batch_id: str) -> dict:
+        """读取某批次简报，不存在返回空字典。"""
+        import json as _json
+        filepath = self.story_dir / "batch_briefs" / f"{batch_id}.json"
+        if not filepath.exists():
+            return {}
+        try:
+            return _json.loads(filepath.read_text(encoding="utf-8"))
+        except (_json.JSONDecodeError, ValueError):
+            return {}
+
     # ── Chapter summaries ──────────────────────────────────────
 
     def save_chapter_summary(self, chapter_num: int, summary: str) -> None:

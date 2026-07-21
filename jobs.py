@@ -45,6 +45,7 @@ class Job:
     knowledge_dir: str = ""
     output_dir: str = ""
     project_name: str = ""
+    write_mode: str = "sequential"  # "sequential" | "batch"
     result: dict | None = None
     error: str | None = None
 
@@ -105,6 +106,7 @@ class JobRunner:
                     knowledge_dir=item.get("knowledge_dir", ""),
                     output_dir=item.get("output_dir", ""),
                     project_name=item.get("project_name", ""),
+                    write_mode=item.get("write_mode", "sequential"),
                     result=item.get("result"),
                     error=item.get("error"),
                 )
@@ -125,8 +127,13 @@ class JobRunner:
     # ── Public API ─────────────────────────────────────────────
 
     async def submit(self, brief: str, project_name: str = "",
-                     total_chapters: int | None = None) -> str:
-        """提交一个新 job，立即返回 job_id。任务在后台异步执行。"""
+                     total_chapters: int | None = None,
+                     write_mode: str = "sequential") -> str:
+        """提交一个新 job，立即返回 job_id。任务在后台异步执行。
+
+        Args:
+            write_mode: "sequential" 逐章串行；"batch" 批次并行（每批 batch_size 章）。
+        """
         jid = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
         job_dir = self.base_dir / jid
         knowledge_dir = str(job_dir / "knowledge")
@@ -138,6 +145,7 @@ class JobRunner:
             project_name=project_name,
             knowledge_dir=knowledge_dir,
             output_dir=output_dir,
+            write_mode=write_mode if write_mode in ("sequential", "batch") else "sequential",
         )
         self._jobs[jid] = job
         self._save_index()
@@ -217,17 +225,29 @@ class JobRunner:
                 self._save_index()
                 await orch.phase_outlining(total_chapters=total_chapters)
 
-                # Phase 4: writing — 逐章写
+                # Phase 4: writing — 逐章写（sequential）或批次并行写（batch）
                 job.phase = "writing"
                 total = orch.total_chapters or 1
                 job.progress = (0, total)
                 job.touch()
                 self._save_index()
-                for ch in range(1, total + 1):
-                    await orch.phase_writing(ch)
-                    job.progress = (ch, total)
-                    job.touch()
-                    self._save_index()
+                if job.write_mode == "batch":
+                    batch_size = max(1, self.cfg.batch_size)
+                    ch = 1
+                    while ch <= total:
+                        count = min(batch_size, total - ch + 1)
+                        await orch.phase_writing_batch(ch, count)
+                        done = min(ch + count - 1, total)
+                        job.progress = (done, total)
+                        job.touch()
+                        self._save_index()
+                        ch += count
+                else:
+                    for ch in range(1, total + 1):
+                        await orch.phase_writing(ch)
+                        job.progress = (ch, total)
+                        job.touch()
+                        self._save_index()
 
                 # Phase 5: complete
                 job.phase = "complete"

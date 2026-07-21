@@ -54,10 +54,16 @@ class NovelCreate(BaseModel):
     brief: str = Field(..., description="创作需求/企划描述")
     project_name: str = Field("", description="项目名（书名）")
     total_chapters: int | None = Field(None, description="目标章节数", ge=1, le=200)
+    write_mode: str = Field("sequential", description="写作模式：sequential 逐章串行 / batch 批次并行")
 
 
 class NovelRevise(BaseModel):
     chapter: int = Field(..., description="要重写的章节号", ge=1)
+
+
+class BatchWrite(BaseModel):
+    start_chapter: int = Field(..., description="起始章节号", ge=1)
+    count: int = Field(..., description="本批次章节数", ge=1, le=20)
 
 
 # ── 端点 ──────────────────────────────────────────────────────
@@ -71,6 +77,7 @@ async def create_novel(req: NovelCreate):
         brief=req.brief,
         project_name=req.project_name,
         total_chapters=req.total_chapters,
+        write_mode=req.write_mode,
     )
     return {"job_id": job_id, "status": "queued"}
 
@@ -139,6 +146,47 @@ async def revise_chapter(job_id: str, req: NovelRevise):
     try:
         result = await orch.phase_writing(req.chapter)
         return {"chapter": req.chapter, "result": result[:1000]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/novels/{job_id}/batch")
+async def batch_write(job_id: str, req: BatchWrite):
+    """触发某 job 的批次并行写作（预协调简报 → 并行写作 → 融合门）。
+
+    仅当 job 不在运行队列中时可调用。
+    """
+    runner = get_runner()
+    job = runner.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.status == JOB_RUNNING or job.status == JOB_QUEUED:
+        raise HTTPException(status_code=409, detail="job still running, cannot batch write")
+
+    # 延迟导入，复用 orchestrator
+    from orchestrator import StoryOrchestrator
+    from agents.llm_client import LLMClient
+    import copy
+
+    cfg = copy.deepcopy(runner.cfg)
+    cfg.knowledge_dir = job.knowledge_dir
+    cfg.output_dir = job.output_dir
+    client = LLMClient(
+        base_url=cfg.llm_base_url,
+        api_key=cfg.llm_api_key,
+        default_model=cfg.main_model,
+    )
+    orch = StoryOrchestrator(cfg, client=client)
+    if job.project_name:
+        orch.project_name = job.project_name
+
+    try:
+        result = await orch.phase_writing_batch(req.start_chapter, req.count)
+        return {
+            "start_chapter": req.start_chapter,
+            "count": req.count,
+            "result": result[:2000],
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

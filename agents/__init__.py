@@ -17,6 +17,8 @@ from agents.llm_client import LLMClient, init_client as init_llm_client
 from agents.knowledge import KnowledgeStore, create_knowledge_store
 
 from agents.style_polisher import StylePolisher, create_style_polisher, STYLE_REGISTRY, list_styles
+from agents.worklog import WorkLog
+from agents.coordinator import BatchCoordinator
 
 __all__ = [
     "Agent",
@@ -34,4 +36,6 @@ __all__ = [
     "LLMClient", "init_llm_client",
     "KnowledgeStore", "create_knowledge_store",
     "StylePolisher", "create_style_polisher", "STYLE_REGISTRY", "list_styles",
+    "WorkLog",
+    "BatchCoordinator",
 ]

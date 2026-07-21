@@ -10,13 +10,24 @@ import logging
 import threading
 from typing import Any
 
-import torch
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    GenerationConfig,
-)
-from peft import PeftModel
+# torch / transformers / peft 是重量级可选依赖，仅在真正使用本地推理时才需要。
+# 延迟导入避免未安装时整个 agents 包无法 import（影响测试与 API 启动）。
+try:
+    import torch
+    from transformers import (
+        AutoTokenizer,
+        AutoModelForCausalLM,
+        GenerationConfig,
+    )
+    from peft import PeftModel
+    _LOCAL_INFERENCE_AVAILABLE = True
+except ImportError:
+    torch = None  # type: ignore
+    AutoTokenizer = None  # type: ignore
+    AutoModelForCausalLM = None  # type: ignore
+    GenerationConfig = None  # type: ignore
+    PeftModel = None  # type: ignore
+    _LOCAL_INFERENCE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +102,7 @@ class LocalInferenceClient:
         base_model_path: str,
         lora_path: str,
         device: str = "cuda:0",
-        dtype: torch.dtype = torch.float16,
+        dtype: Any = None,
         max_new_tokens: int = 4096,
         temperature: float = 0.7,
         top_p: float = 0.9,
@@ -100,6 +111,16 @@ class LocalInferenceClient:
         # __init__ 可能被多次调用（单例模式），跳过已初始化的
         if hasattr(self, "_loaded") and self._loaded:
             return
+
+        if not _LOCAL_INFERENCE_AVAILABLE:
+            raise RuntimeError(
+                "本地推理依赖未安装。请安装 torch/transformers/peft 后再使用 "
+                "LocalInferenceClient，或改用 LLMClient / OllamaClient。"
+            )
+
+        # dtype 默认值延迟求值（torch 可能在该环境未安装）
+        if dtype is None:
+            dtype = torch.float16 if torch is not None else None
 
         self.base_model_path = base_model_path
         self.lora_path = lora_path

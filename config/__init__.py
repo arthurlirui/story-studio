@@ -50,6 +50,8 @@ class StudioConfig:
     max_rounds: int = 3  # 每章自动修订上限（REVISE/REJECT 回灌重写的最大轮数）
     scene_writers: int = 3  # 并行写作的编剧数量
     max_context_chars: int = 60000  # build_context 总字符预算，超出按章节号倒序裁剪最旧摘要
+    batch_size: int = 3  # 单批次并行写作的默认章节数（仍受 scene_writers 上限约束）
+    merge_gate_rounds: int = 1  # 融合门冲突章定向重写的轮数上限
 
 
 def _load_dotenv(start: Path) -> None:
@@ -84,11 +86,6 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
         cfg.backend = data.get("backend", cfg.backend)
         cfg.llm_base_url = data.get("llm_base_url", cfg.llm_base_url)
         cfg.llm_api_key = data.get("llm_api_key", cfg.llm_api_key)
-<<<<<<< HEAD
-=======
-        cfg.volcengine_base_url = data.get("volcengine_base_url", cfg.volcengine_base_url)
-        cfg.volcengine_api_key = _expand_env(data.get("volcengine_api_key", cfg.volcengine_api_key))
->>>>>>> 526e7f056fba7e56e975e5f2b965e16e7e911b5c
         cfg.main_model = data.get("main_model", cfg.main_model)
         cfg.light_model = data.get("light_model", cfg.light_model)
         cfg.ollama_host = data.get("ollama_host", cfg.ollama_host)
@@ -96,6 +93,8 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
         cfg.scene_writers = data.get("scene_writers", cfg.scene_writers)
         cfg.agent_models = data.get("agent_models", cfg.agent_models) or {}
         cfg.max_context_chars = data.get("max_context_chars", cfg.max_context_chars)
+        cfg.batch_size = data.get("batch_size", cfg.batch_size)
+        cfg.merge_gate_rounds = data.get("merge_gate_rounds", cfg.merge_gate_rounds)
 
         if "knowledge_dir" in data:
             cfg.knowledge_dir = data["knowledge_dir"]
@@ -104,15 +103,10 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
         if "output_dir" in data:
             cfg.output_dir = data["output_dir"]
 
-<<<<<<< HEAD
     # Env fallback：settings.yaml 缺密钥时从 LLM_API_KEY 环境变量取
     # （settings.yaml 已加入 .gitignore，不进版本库；生产用 env 注入更安全）
     if not cfg.llm_api_key:
         cfg.llm_api_key = os.environ.get("LLM_API_KEY", "")
-=======
-    # Environment variable overrides file value (keeps secrets out of the repo).
-    cfg.volcengine_api_key = os.environ.get("VOLCENGINE_API_KEY", cfg.volcengine_api_key)
->>>>>>> 526e7f056fba7e56e975e5f2b965e16e7e911b5c
 
     # Ensure directories exist
     Path(cfg.knowledge_dir).mkdir(parents=True, exist_ok=True)
