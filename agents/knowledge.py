@@ -32,9 +32,10 @@ def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> Non
 class KnowledgeStore:
     """Two-tier knowledge store (series + variant)."""
 
-    def __init__(self, base_dir: str, series_dir: str = ""):
+    def __init__(self, base_dir: str, series_dir: str = "", series_research_dir: str = ""):
         self.base = Path(base_dir)
         self.series = Path(series_dir) if series_dir else None
+        self.series_research = Path(series_research_dir) if series_research_dir else None
 
         self.world_dir = self.base / "world"
         self.char_dir = self.base / "characters"
@@ -42,9 +43,10 @@ class KnowledgeStore:
         self.chapters_dir = self.story_dir / "chapters"
         self.revisions_dir = self.story_dir / "revisions"
         self.summaries_dir = self.story_dir / "summaries"
+        self.research_dir = self.base / "research"
 
         for d in [self.world_dir, self.char_dir, self.chapters_dir,
-                  self.revisions_dir, self.summaries_dir]:
+                  self.revisions_dir, self.summaries_dir, self.research_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
     # ── Series layer (read-only) ───────────────────────────────
@@ -294,6 +296,84 @@ class KnowledgeStore:
                 nums.append(int(m.group(1)))
         return sorted(nums)
 
+    # ── Research KB (variant + series, read-write variant / read-only series) ──
+
+    def _safe_topic(self, topic: str) -> str:
+        """调研主题 → 文件名 slug（与 _safe_name 同语义，复用实现）。"""
+        return self._safe_name(topic)
+
+    def _series_research_files(self) -> list[Path]:
+        if not self.series_research or not self.series_research.exists():
+            return []
+        return sorted(self.series_research.glob("*.md"))
+
+    def save_research(self, topic: str, content: str) -> None:
+        """写入变体级调研文档 research/{topic}.md（原子写）。"""
+        if not content:
+            logger.warning("跳过写入调研文档（空内容）: %s", topic)
+            return
+        filepath = self.research_dir / f"{self._safe_topic(topic)}.md"
+        _atomic_write_text(filepath, content)
+
+    def load_research(self, topic: str) -> str:
+        """读取调研文档，变体层缺失时 fallback 系列层。"""
+        filepath = self.research_dir / f"{self._safe_topic(topic)}.md"
+        if filepath.exists():
+            return filepath.read_text(encoding="utf-8")
+        if self.series_research:
+            spath = self.series_research / f"{self._safe_topic(topic)}.md"
+            if spath.exists():
+                return spath.read_text(encoding="utf-8")
+        return ""
+
+    def list_research_topics(self) -> list[str]:
+        """变体 + 系列层调研文档合并去重。"""
+        topics: set[str] = set()
+        for f in self.research_dir.glob("*.md"):
+            topics.add(f.stem)
+        for f in self._series_research_files():
+            topics.add(f.stem)
+        return sorted(topics)
+
+    def get_all_research(self, max_per_doc: int = 2000, total_budget: int = 6000) -> str:
+        """拼接所有调研文档，每篇截断到 max_per_doc 字，总和截断到 total_budget。
+
+        优先级：变体层在前（更相关），系列层在后。
+        """
+        parts: list[str] = []
+        total = 0
+        seen: set[str] = set()
+
+        # 变体层
+        for f in sorted(self.research_dir.glob("*.md")):
+            seen.add(f.stem)
+            content = f.read_text(encoding="utf-8")[:max_per_doc]
+            parts.append(f"### [Research/variant] {f.stem}\n\n{content}")
+            total += len(content)
+            if total >= total_budget:
+                break
+
+        # 系列层（未与变体重名）
+        if total < total_budget:
+            for f in self._series_research_files():
+                if f.stem in seen:
+                    continue
+                content = f.read_text(encoding="utf-8")[:max_per_doc]
+                parts.append(f"### [Research/series] {f.stem}\n\n{content}")
+                total += len(content)
+                if total >= total_budget:
+                    break
+
+        return "\n\n---\n\n".join(parts)
+
+    def load_series_research(self) -> str:
+        """仅系列层调研（供需要明确区分优先级的场景）。"""
+        parts: list[str] = []
+        for f in self._series_research_files():
+            content = f.read_text(encoding="utf-8")
+            parts.append(f"### [Research/series] {f.stem}\n\n{content}")
+        return "\n\n---\n\n".join(parts)
+
     # ── Context builder (two-tier merge) ───────────────────────
 
     def build_context(self, chapter_num: int | None = None,
@@ -309,6 +389,11 @@ class KnowledgeStore:
         series_knowledge = self.get_all_series_knowledge()
         if series_knowledge:
             parts.append("## Series Knowledge (shared)\n" + series_knowledge)
+
+        # Research KB (variant + series)：调研沉淀，写作 / 创新阶段参考
+        research = self.get_all_research()
+        if research:
+            parts.append("## 调研知识库\n" + research)
 
         # Variant layer: this novel's unique worldview
         world_summary = self.get_world_summary()
@@ -363,5 +448,7 @@ class KnowledgeStore:
         return re.sub(r'[^\w\u4e00-\u9fff-]', '_', name.strip())
 
 
-def create_knowledge_store(base_dir: str, series_dir: str = "") -> KnowledgeStore:
-    return KnowledgeStore(base_dir, series_dir)
+def create_knowledge_store(
+    base_dir: str, series_dir: str = "", series_research_dir: str = ""
+) -> KnowledgeStore:
+    return KnowledgeStore(base_dir, series_dir, series_research_dir)

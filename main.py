@@ -165,6 +165,14 @@ async def _dispatch_command(raw: str, orchestrator: StoryOrchestrator) -> bool:
                 status = orchestrator.get_status()
         if phase == "idle":
             print("\n⏳ 还没有创建项目，先用 /new <需求> 开始。")
+        elif phase == "research":
+            print("\n🔍 还未调研。用 `/research [brief]` 触发调研，或 `/plan` 生成任务清单。")
+        elif phase == "innovate":
+            print("\n💡 调研已就绪，进入创新亮点阶段...")
+            result = await orchestrator.phase_innovate(
+                orchestrator.project_name or ""
+            )
+            print(f"\n✅ 创新亮点已生成!\n\n{result[:1000]}...\n\n输入 `/next` 进入策划阶段。")
         elif phase == "planning":
             print("\n🌍 进入世界观和角色设定阶段...")
             result = await orchestrator.phase_building()

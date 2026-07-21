@@ -19,6 +19,13 @@ from agents.knowledge import KnowledgeStore, create_knowledge_store
 from agents.style_polisher import StylePolisher, create_style_polisher, STYLE_REGISTRY, list_styles
 from agents.worklog import WorkLog
 from agents.coordinator import BatchCoordinator
+from agents.web_search import (
+    WebSearchProvider, SearchResult,
+    DoubaoSearchProvider, BochaSearchProvider, MockSearchProvider,
+    get_search_provider,
+)
+from agents.topic_researcher import TopicResearcher, DEFAULT_TOPICS
+from agents.innovator import Innovator
 
 __all__ = [
     "Agent",
@@ -38,4 +45,9 @@ __all__ = [
     "StylePolisher", "create_style_polisher", "STYLE_REGISTRY", "list_styles",
     "WorkLog",
     "BatchCoordinator",
+    "WebSearchProvider", "SearchResult",
+    "DoubaoSearchProvider", "BochaSearchProvider", "MockSearchProvider",
+    "get_search_provider",
+    "TopicResearcher", "DEFAULT_TOPICS",
+    "Innovator",
 ]

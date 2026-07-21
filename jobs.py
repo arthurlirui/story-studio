@@ -207,61 +207,54 @@ class JobRunner:
                 if job.project_name:
                     orch.project_name = job.project_name
 
-                # Phase 1: planning
-                job.phase = "planning"
-                job.touch()
-                self._save_index()
-                await orch.phase_planning(job.brief)
+                # 用 TaskPlanner 驱动整个 pipeline（数据驱动 7 任务清单，支持断点续跑）
+                from planner import TaskPlanner
+                planner = TaskPlanner(
+                    orch, orch.knowledge, cfg, orch.worklog,
+                    plan_path=Path(job.knowledge_dir) / "task_plan.json",
+                )
+                # 默认总章节数：未指定时给一个合理默认值
+                total = total_chapters or 10
+                planner.build_plan(
+                    brief=job.brief,
+                    total_chapters=total,
+                    write_mode=job.write_mode,
+                    job_id=job.id,
+                )
 
-                # Phase 2: building
-                job.phase = "building"
-                job.touch()
-                self._save_index()
-                await orch.phase_building()
+                def _on_progress(task) -> None:
+                    job.phase = task.phase
+                    # 进度按已完成任务数 / 总任务数近似
+                    done_count = sum(
+                        1 for t in planner.plan.tasks
+                        if t.status in ("done", "skipped")
+                    )
+                    total_count = len(planner.plan.tasks)
+                    if task.phase == "writing":
+                        # writing 阶段保留章节粒度进度
+                        job.progress = (orch.current_chapter, orch.total_chapters or total)
+                    else:
+                        job.progress = (done_count, total_count)
+                    job.touch()
+                    self._save_index()
 
-                # Phase 3: outlining
-                job.phase = "outlining"
-                job.touch()
-                self._save_index()
-                await orch.phase_outlining(total_chapters=total_chapters)
+                await planner.run_all(on_progress=_on_progress, stop_on_failure=True)
 
-                # Phase 4: writing — 逐章写（sequential）或批次并行写（batch）
-                job.phase = "writing"
-                total = orch.total_chapters or 1
-                job.progress = (0, total)
-                job.touch()
-                self._save_index()
-                if job.write_mode == "batch":
-                    batch_size = max(1, self.cfg.batch_size)
-                    ch = 1
-                    while ch <= total:
-                        count = min(batch_size, total - ch + 1)
-                        await orch.phase_writing_batch(ch, count)
-                        done = min(ch + count - 1, total)
-                        job.progress = (done, total)
-                        job.touch()
-                        self._save_index()
-                        ch += count
-                else:
-                    for ch in range(1, total + 1):
-                        await orch.phase_writing(ch)
-                        job.progress = (ch, total)
-                        job.touch()
-                        self._save_index()
-
-                # Phase 5: complete
-                job.phase = "complete"
-                job.touch()
-                self._save_index()
-                result = await orch.phase_complete()
+                # 完稿阶段产物预览
+                last_task = next(
+                    (t for t in planner.plan.tasks if t.phase == "complete"),
+                    None,
+                )
+                preview = (last_task.result_excerpt if last_task else "")[:500]
 
                 job.status = JOB_SUCCEEDED
                 job.result = {
                     "project_name": orch.project_name,
-                    "total_chapters": total,
+                    "total_chapters": orch.total_chapters or total,
                     "cost": orch._cost_summary(),
-                    "preview": result[:500],
+                    "preview": preview,
                 }
+                job.phase = "complete"
                 job.touch()
                 self._save_index()
 

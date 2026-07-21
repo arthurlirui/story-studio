@@ -41,7 +41,14 @@ class StudioConfig:
     # Paths
     knowledge_dir: str = ""
     series_knowledge_dir: str = ""  # Series-level shared knowledge (read-only)
+    series_research_dir: str = ""  # Series-level shared research KB (read-only)
     output_dir: str = ""
+    # 网络搜索 + 私有调研 KB
+    web_search_provider: str = "doubao"  # "doubao" | "bocha" | "mock"
+    web_search_api_key: str = ""  # 留空从 env WEB_SEARCH_API_KEY 读
+    web_search_endpoint: str = ""  # 留空用 provider 默认 endpoint
+    research_enabled: bool = True  # 关闭则跳过 research/innovate 任务
+    research_max_topics: int = 4  # 检索主题数（热点/重要事件/同类小说/创作手法）
     agents: dict[str, AgentConfig] = field(default_factory=dict)
     # Per-agent 模型路由：{agent_role: model_name}，缺键回退 role 默认值。
     # role 默认：scene_writer/showrunner/world_architect/character_designer → main_model；
@@ -95,11 +102,18 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
         cfg.max_context_chars = data.get("max_context_chars", cfg.max_context_chars)
         cfg.batch_size = data.get("batch_size", cfg.batch_size)
         cfg.merge_gate_rounds = data.get("merge_gate_rounds", cfg.merge_gate_rounds)
+        cfg.web_search_provider = data.get("web_search_provider", cfg.web_search_provider)
+        cfg.web_search_api_key = data.get("web_search_api_key", cfg.web_search_api_key)
+        cfg.web_search_endpoint = data.get("web_search_endpoint", cfg.web_search_endpoint)
+        cfg.research_enabled = data.get("research_enabled", cfg.research_enabled)
+        cfg.research_max_topics = data.get("research_max_topics", cfg.research_max_topics)
 
         if "knowledge_dir" in data:
             cfg.knowledge_dir = data["knowledge_dir"]
         if "series_knowledge_dir" in data:
             cfg.series_knowledge_dir = data["series_knowledge_dir"]
+        if "series_research_dir" in data:
+            cfg.series_research_dir = data["series_research_dir"]
         if "output_dir" in data:
             cfg.output_dir = data["output_dir"]
 
@@ -107,11 +121,13 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
     # （settings.yaml 已加入 .gitignore，不进版本库；生产用 env 注入更安全）
     if not cfg.llm_api_key:
         cfg.llm_api_key = os.environ.get("LLM_API_KEY", "")
+    if not cfg.web_search_api_key:
+        cfg.web_search_api_key = os.environ.get("WEB_SEARCH_API_KEY", "")
 
     # Ensure directories exist
     Path(cfg.knowledge_dir).mkdir(parents=True, exist_ok=True)
     for sub in ("world", "characters", "story/chapters", "story/revisions",
-                "story/summaries", "story/reviews"):
+                "story/summaries", "story/reviews", "research"):
         Path(cfg.knowledge_dir, sub).mkdir(parents=True, exist_ok=True)
     Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
 

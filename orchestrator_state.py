@@ -18,6 +18,8 @@ from typing import Any
 
 # 持久化的 phase 取值（与 orchestrator.phase 一致）
 PHASE_IDLE = "idle"
+PHASE_RESEARCH = "research"
+PHASE_INNOVATE = "innovate"
 PHASE_PLANNING = "planning"
 PHASE_BUILDING = "building"
 PHASE_OUTLINING = "outlining"

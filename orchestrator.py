@@ -23,10 +23,12 @@ from agents import (
     TitleDesigner, Hooker, ClimaxDesigner,
     KnowledgeStore,
     WorkLog, BatchCoordinator,
+    TopicResearcher, Innovator,
+    get_search_provider,
 )
 from agents.llm_client import client as llm_client
 from agents.text_cleaner import clean_chapter_body, strip_existing_title
-from orchestrator_state import RunState, new_job_id
+from orchestrator_state import RunState, new_job_id, PHASE_RESEARCH, PHASE_INNOVATE
 
 logger = logging.getLogger(__name__)
 
@@ -107,10 +109,11 @@ class StoryOrchestrator:
                 "或在构造 StoryOrchestrator 时传入 client 参数。"
             )
 
-        # Knowledge store (two-tier: series + variant)
+        # Knowledge store (two-tier: series + variant) + research KB
         self.knowledge = KnowledgeStore(
             self.cfg.knowledge_dir,
             self.cfg.series_knowledge_dir,
+            self.cfg.series_research_dir,
         )
 
         # Create agents — all use LLM API
@@ -202,6 +205,22 @@ class StoryOrchestrator:
             self.cfg, self.worklog, self.job_id,
         )
 
+        # 网络搜索 provider（可插拔：doubao / bocha / mock）
+        self.web_search = get_search_provider(self.cfg)
+        # 热点研究员 + 创新亮点策划师（research / innovate 阶段）
+        self.topic_researcher = TopicResearcher(
+            "热点研究员", "Topic Researcher", "调研热点/重要事件/同类小说/创作手法",
+            self.client, model=self._agent_model("topic_researcher", "light"),
+            temperature=0.5, max_tokens=4096,
+        )
+        self.innovator = Innovator(
+            "创新亮点策划师", "Innovator", "基于私有 KB 产出创新亮点清单",
+            self.client, model=self._agent_model("innovator", "main"),
+            temperature=0.9, max_tokens=4096,
+        )
+        self.agents["topic_researcher"] = self.topic_researcher
+        self.agents["innovator"] = self.innovator
+
     # ── RunState 持久化 ────────────────────────────────────────
 
     def _load_state_from_disk(self) -> None:
@@ -279,6 +298,89 @@ class StoryOrchestrator:
         self._call_count += 1
         if self._call_count > 1:
             await asyncio.sleep(3.0)  # 3s between calls
+
+    # ── Phase 0a: 调研 ─────────────────────────────────────────
+
+    async def phase_research(self, brief: str) -> str:
+        """调研阶段: 调用 TopicResearcher 联网搜索并沉淀到私有 KB。
+
+        产出：research/{hot_events,important_events,similar_novels,creation_techniques}.md
+        失败不阻塞：搜索 provider 异常 / LLM 异常均落空字符串 + 警告日志。
+        """
+        self._set_phase(PHASE_RESEARCH)
+        self._log("user", f"[research] brief: {brief}")
+        logger.info("phase_research: 开始调研 (provider=%s)", self.web_search.name)
+
+        t0 = time.time()
+        try:
+            results = await self.topic_researcher.research(
+                brief, self.web_search, self.knowledge,
+            )
+        except Exception as e:
+            logger.exception("phase_research 异常: %s", e)
+            await self.worklog.append(
+                phase=PHASE_RESEARCH, agent=self.topic_researcher.name,
+                role="topic_researcher", action="research",
+                model=self.topic_researcher.model, error=str(e),
+                duration_ms=int((time.time() - t0) * 1000),
+            )
+            return f"## 调研失败\n\n{e}"
+
+        self._record_usage(self.topic_researcher)
+
+        # 汇总摘要
+        summary_lines = []
+        total_sources = 0
+        for slug, meta in results.items():
+            n_src = len(meta.get("sources", []))
+            total_sources += n_src
+            first_line = (meta.get("content") or "").strip().split("\n", 1)[0][:80]
+            summary_lines.append(f"- **{slug}**: {n_src} 条来源 — {first_line}")
+        summary = "## 调研完成\n\n" + "\n".join(summary_lines)
+        summary += f"\n\n共检索 {len(results)} 个主题，{total_sources} 条来源。"
+
+        await self.worklog.append(
+            phase=PHASE_RESEARCH, agent=self.topic_researcher.name,
+            role="topic_researcher", action="research",
+            model=self.topic_researcher.model,
+            excerpt=summary[:200],
+            duration_ms=int((time.time() - t0) * 1000),
+        )
+        self._log("assistant", summary)
+        return summary
+
+    # ── Phase 0b: 创新亮点 ─────────────────────────────────────
+
+    async def phase_innovate(self, brief: str = "") -> str:
+        """创新亮点阶段: 基于私有 KB 产出 5-8 个创新亮点并落盘到 research/highlights.md。"""
+        self._set_phase(PHASE_INNOVATE)
+        self._log("user", f"[innovate] brief: {brief[:80]}")
+        logger.info("phase_innovate: 产出创新亮点")
+
+        t0 = time.time()
+        try:
+            highlights = await self.innovator.innovate(self.knowledge, brief)
+        except Exception as e:
+            logger.exception("phase_innovate 异常: %s", e)
+            await self.worklog.append(
+                phase=PHASE_INNOVATE, agent=self.innovator.name,
+                role="innovator", action="innovate",
+                model=self.innovator.model, error=str(e),
+                duration_ms=int((time.time() - t0) * 1000),
+            )
+            return f"## 创新亮点生成失败\n\n{e}"
+
+        self._record_usage(self.innovator)
+
+        await self.worklog.append(
+            phase=PHASE_INNOVATE, agent=self.innovator.name,
+            role="innovator", action="innovate",
+            model=self.innovator.model,
+            excerpt=highlights[:200],
+            duration_ms=int((time.time() - t0) * 1000),
+        )
+        self._log("assistant", highlights)
+        return highlights
 
     # ── Phase 1: 策划 ──────────────────────────────────────────
 
@@ -1502,6 +1604,8 @@ class StoryOrchestrator:
         产物继续，而不是被卡在 "未创建项目" 提示里。
         推断顺序（从后往前）：有 final.md → complete；有章节 → writing；
         有 outline → outlining；有 world/character → building；否则 idle。
+        新增 research/innovate 推断：有 world 产物但无 highlights → innovate；
+        有 highlights 但无 world → planning；有 research 但无 highlights → innovate。
         """
         if (self.knowledge.story_dir / "final.md").exists():
             return "complete"
@@ -1509,6 +1613,15 @@ class StoryOrchestrator:
             return "writing"
         if self.knowledge.load_outline().strip():
             return "outlining"
-        if self.knowledge.list_world_docs() or self.knowledge.list_characters():
+        has_world = bool(self.knowledge.list_world_docs() or self.knowledge.list_characters())
+        if has_world:
             return "building"
+        # research / innovate 推断（仅当完全没有 world 产物时才考虑）
+        research_topics = set(self.knowledge.list_research_topics())
+        has_highlights = "highlights" in research_topics
+        has_research = bool(research_topics - {"highlights"})
+        if has_research and not has_highlights:
+            return PHASE_INNOVATE
+        if has_highlights:
+            return "planning"
         return "idle"
