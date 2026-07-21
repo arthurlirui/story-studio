@@ -338,7 +338,7 @@ class KnowledgeStore:
     def get_all_research(self, max_per_doc: int = 2000, total_budget: int = 6000) -> str:
         """拼接所有调研文档，每篇截断到 max_per_doc 字，总和截断到 total_budget。
 
-        优先级：变体层在前（更相关），系列层在后。
+        优先级：变体层在前（更相关），系列层在后。变体同名主题覆盖系列。
         """
         parts: list[str] = []
         total = 0
@@ -347,22 +347,27 @@ class KnowledgeStore:
         # 变体层
         for f in sorted(self.research_dir.glob("*.md")):
             seen.add(f.stem)
-            content = f.read_text(encoding="utf-8")[:max_per_doc]
-            parts.append(f"### [Research/variant] {f.stem}\n\n{content}")
-            total += len(content)
-            if total >= total_budget:
+            content = f.read_text(encoding="utf-8")
+            # 按剩余预算截断
+            remaining = total_budget - total
+            if remaining <= 0:
                 break
+            truncated = content[:min(max_per_doc, remaining)]
+            parts.append(f"### [Research/variant] {f.stem}\n\n{truncated}")
+            total += len(truncated)
 
         # 系列层（未与变体重名）
         if total < total_budget:
             for f in self._series_research_files():
                 if f.stem in seen:
                     continue
-                content = f.read_text(encoding="utf-8")[:max_per_doc]
-                parts.append(f"### [Research/series] {f.stem}\n\n{content}")
-                total += len(content)
-                if total >= total_budget:
+                remaining = total_budget - total
+                if remaining <= 0:
                     break
+                content = f.read_text(encoding="utf-8")
+                truncated = content[:min(max_per_doc, remaining)]
+                parts.append(f"### [Research/series] {f.stem}\n\n{truncated}")
+                total += len(truncated)
 
         return "\n\n---\n\n".join(parts)
 

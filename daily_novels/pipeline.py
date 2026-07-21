@@ -43,7 +43,10 @@ DIRECTIONS = [
 
 
 async def search_hot_topics() -> list[dict]:
-    """Search for current hot topics using web search API."""
+    """Search for current hot topics using web search API.
+
+    复用 agents.web_search.BochaSearchProvider，与主 pipeline 共享 provider 抽象。
+    """
     # 动态生成当前年月，避免硬编码过期日期
     now = datetime.now(BJ)
     ym = f"{now.year}年{now.month}月"
@@ -57,28 +60,24 @@ async def search_hot_topics() -> list[dict]:
         logger.warning("BOCHA_API_KEY 未设置，跳过热点搜索")
         return []
 
-    all_results = []
+    # 延迟导入避免循环依赖（daily_novels 可能被独立运行）
+    sys.path.insert(0, str(WORKSPACE.parent))
+    from agents.web_search import BochaSearchProvider
+
+    provider = BochaSearchProvider(BOCHA_API_KEY)
+    all_results: list[dict] = []
     for query in queries:
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(
-                    "https://api.bochaai.com/v1/ai/search",
-                    params={"query": query, "count": 5},
-                    headers={"Authorization": f"Bearer {BOCHA_API_KEY}"},
-                    timeout=30.0,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    results = data.get("data", {}).get("webPages", {}).get("value", [])
-                    for r in results:
-                        all_results.append({
-                            "title": r.get("name", ""),
-                            "snippet": r.get("snippet", ""),
-                            "url": r.get("url", ""),
-                        })
+            hits = await provider.search(query, count=5)
+            for h in hits:
+                all_results.append({
+                    "title": h.title,
+                    "snippet": h.snippet,
+                    "url": h.url,
+                })
         except Exception as e:
-            logger.warning(f"Search '{query}' failed: {e}")
-    
+            logger.warning("Search '%s' failed: %s", query, e)
+
     return all_results[:15]
 
 

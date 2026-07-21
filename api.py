@@ -201,6 +201,88 @@ async def cancel_novel(job_id: str):
     return {"job_id": job_id, "status": "cancelled"}
 
 
+# ── 任务清单端点（TaskPlanner）─────────────────────────────────
+
+def _build_planner_for_job(job_id: str):
+    """为指定 job 构造 TaskPlanner（复用其 knowledge_dir / cfg）。"""
+    runner = get_runner()
+    job = runner.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    from orchestrator import StoryOrchestrator
+    from agents.llm_client import LLMClient
+    from planner import TaskPlanner
+    import copy
+
+    cfg = copy.deepcopy(runner.cfg)
+    cfg.knowledge_dir = job.knowledge_dir
+    cfg.output_dir = job.output_dir
+    client = LLMClient(
+        base_url=cfg.llm_base_url,
+        api_key=cfg.llm_api_key,
+        default_model=cfg.main_model,
+    )
+    orch = StoryOrchestrator(cfg, client=client)
+    if job.project_name:
+        orch.project_name = job.project_name
+    planner = TaskPlanner(
+        orch, orch.knowledge, cfg, orch.worklog,
+        plan_path=Path(job.knowledge_dir) / "task_plan.json",
+    )
+    return planner, orch, job
+
+
+@app.get("/novels/{job_id}/tasks")
+async def get_tasks(job_id: str):
+    """返回该 job 的任务清单。"""
+    planner, _orch, job = _build_planner_for_job(job_id)
+    plan = planner.load_plan()
+    if plan is None:
+        return {"job_id": job_id, "plan": None, "message": "尚未生成任务清单"}
+    return {
+        "job_id": job_id,
+        "plan": plan.to_dict(),
+        "summary": planner.summary(),
+    }
+
+
+@app.post("/novels/{job_id}/tasks/{task_n}/run")
+async def run_task(job_id: str, task_n: int):
+    """执行该 job 的第 N 个任务（1-based）。"""
+    planner, _orch, job = _build_planner_for_job(job_id)
+    if job.status == JOB_RUNNING or job.status == JOB_QUEUED:
+        raise HTTPException(status_code=409, detail="job still running")
+    plan = planner.load_plan()
+    if plan is None:
+        raise HTTPException(status_code=404, detail="task plan not found, POST /novels first")
+    task = next((t for t in plan.tasks if t.id == task_n), None)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"task #{task_n} not found")
+    if task.status in ("done", "running"):
+        planner.reset_task(task_n)
+        task = next((t for t in planner.plan.tasks if t.id == task_n), task)
+    try:
+        result = await planner.run_task(task)
+        return {"task_id": task_n, "status": task.status, "result": result[:1000]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/novels/{job_id}/run-all")
+async def run_all_tasks(job_id: str):
+    """按序执行该 job 的所有未完成任务。"""
+    planner, _orch, job = _build_planner_for_job(job_id)
+    if job.status == JOB_RUNNING or job.status == JOB_QUEUED:
+        raise HTTPException(status_code=409, detail="job still running")
+    if planner.load_plan() is None:
+        raise HTTPException(status_code=404, detail="task plan not found")
+    try:
+        await planner.run_all(stop_on_failure=True)
+        return {"job_id": job_id, "summary": planner.summary()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/health")
 async def health():
     """健康检查。"""

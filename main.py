@@ -44,6 +44,11 @@ def help_text():
 
   🎬 创作流程
   /new <需求>          — 开始新项目（输入创作需求）
+  /research <brief>    — 调研热点/重要事件/同类小说/创作手法，沉淀到私有 KB
+  /plan [总章数]        — 生成 7 任务清单（调研→创新→策划→建立→大纲→写作→完稿）
+  /tasks               — 查看任务清单与各任务状态
+  /run-task [N]        — 执行第 N 个任务（缺省=下一个未完成的）
+  /run-all             — 按序执行所有未完成任务
   /phase               — 查看当前阶段
   /next                — 进入下一阶段
   /write [章节号]       — 写指定章节（默认下一章）
@@ -238,6 +243,132 @@ async def _dispatch_command(raw: str, orchestrator: StoryOrchestrator) -> bool:
         print(f"\n🚀 批次并行写作：第 {start} 章起，共 {count} 章...")
         result = await orchestrator.phase_writing_batch(start, count)
         print(f"\n✅ {result[:2000]}...")
+        return False
+
+    # ── 调研 + 计划任务 ──────────────────────────────────────────
+    if raw.startswith("/research"):
+        parts = raw.split(maxsplit=1)
+        brief = parts[1].strip() if len(parts) > 1 else orchestrator.project_name
+        if not brief:
+            print("用法: /research <brief>   （或先用 /new 创建项目）")
+            return False
+        print(f"\n🔍 开始调研（provider={orchestrator.web_search.name}）...")
+        result = await orchestrator.phase_research(brief)
+        print(f"\n✅ {result[:2000]}")
+        return False
+
+    if raw.startswith("/plan"):
+        parts = raw.split()
+        total = orchestrator.total_chapters or 10
+        if len(parts) > 1:
+            parsed = _parse_int(parts[1], "总章节数")
+            if parsed is None:
+                return False
+            total = parsed
+        from planner import TaskPlanner
+        planner = TaskPlanner(
+            orchestrator, orchestrator.knowledge, orchestrator.cfg,
+            orchestrator.worklog,
+        )
+        plan = planner.build_plan(
+            brief=orchestrator.project_name or "(未命名项目)",
+            total_chapters=total,
+            write_mode="sequential",
+        )
+        print(f"\n📋 任务清单已生成（job_id={plan.job_id[:24]}, 共 {len(plan.tasks)} 任务）")
+        for t in plan.tasks:
+            icon = {"pending": "⏳", "running": "🔄", "done": "✅",
+                    "failed": "❌", "skipped": "⏭️"}.get(t.status, "❓")
+            print(f"  {icon} #{t.id} {t.name} [{t.phase}] — {t.status}")
+        print("\n用 /run-all 执行所有任务，或 /run-task N 执行第 N 个。")
+        return False
+
+    if raw == "/tasks":
+        from planner import TaskPlanner
+        planner = TaskPlanner(
+            orchestrator, orchestrator.knowledge, orchestrator.cfg,
+            orchestrator.worklog,
+        )
+        plan = planner.load_plan()
+        if not plan:
+            print("\n⏳ 还没有任务清单，先用 /plan [总章节数] 生成。")
+            return False
+        print(f"\n📋 任务清单（job_id={plan.job_id[:24]}, {plan.write_mode}, "
+              f"{plan.total_chapters} 章）")
+        for t in plan.tasks:
+            icon = {"pending": "⏳", "running": "🔄", "done": "✅",
+                    "failed": "❌", "skipped": "⏭️"}.get(t.status, "❓")
+            line = f"  {icon} #{t.id} {t.name} [{t.phase}] — {t.status}"
+            if t.result_excerpt:
+                line += f"  | {t.result_excerpt[:60]}"
+            if t.error:
+                line += f"  ⚠ {t.error[:60]}"
+            print(line)
+        s = planner.summary()
+        print(f"\n汇总: {s['done']} 完成 / {s['failed']} 失败 / "
+              f"{s['skipped']} 跳过 / {s['pending']} 待执行 / {s['total']} 总计")
+        return False
+
+    if raw.startswith("/run-task"):
+        parts = raw.split()
+        from planner import TaskPlanner
+        planner = TaskPlanner(
+            orchestrator, orchestrator.knowledge, orchestrator.cfg,
+            orchestrator.worklog,
+        )
+        if not planner.load_plan():
+            print("\n⏳ 还没有任务清单，先用 /plan 生成。")
+            return False
+        task = None
+        if len(parts) > 1:
+            tid = _parse_int(parts[1], "任务号")
+            if tid is None:
+                return False
+            for t in planner.plan.tasks:
+                if t.id == tid:
+                    task = t
+                    break
+            if task is None:
+                print(f"\n❌ 找不到任务 #{tid}")
+                return False
+            if task.status in ("done", "running"):
+                # 允许重跑 done 的任务
+                planner.reset_task(tid)
+                task = next((t for t in planner.plan.tasks if t.id == tid), task)
+        else:
+            task = planner.next_task()
+            if task is None:
+                print("\n✅ 所有任务已完成。")
+                return False
+        print(f"\n▶ 执行任务 #{task.id} {task.name} (phase={task.phase})...")
+        try:
+            result = await planner.run_task(task)
+            print(f"\n✅ {result[:2000]}")
+        except Exception as e:
+            print(f"\n❌ 任务失败: {e}")
+        return False
+
+    if raw == "/run-all":
+        from planner import TaskPlanner
+        planner = TaskPlanner(
+            orchestrator, orchestrator.knowledge, orchestrator.cfg,
+            orchestrator.worklog,
+        )
+        if not planner.load_plan():
+            print("\n⏳ 还没有任务清单，先用 /plan 生成。")
+            return False
+        print("\n🚀 按序执行所有未完成任务...")
+
+        def _on_progress(t):
+            print(f"  → #{t.id} {t.name}: {t.status}")
+
+        try:
+            await planner.run_all(on_progress=_on_progress, stop_on_failure=True)
+            s = planner.summary()
+            print(f"\n✅ 完成: {s['done']} 成功 / {s['failed']} 失败 / "
+                  f"{s['skipped']} 跳过 / {s['total']} 总计")
+        except Exception as e:
+            print(f"\n❌ 中断: {e}")
         return False
 
     if raw.startswith("/worklog"):

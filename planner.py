@@ -192,11 +192,11 @@ class TaskPlanner:
     # ── 查询 ────────────────────────────────────────────────────
 
     def next_task(self) -> Task | None:
-        """返回第一个未完成（pending/failed）任务。全部完成返回 None。"""
+        """返回第一个 pending 任务（不重试 failed）。全部完成/已触达返回 None。"""
         if not self.plan:
             return None
         for t in self.plan.tasks:
-            if t.status in (TASK_PENDING, TASK_FAILED):
+            if t.status == TASK_PENDING:
                 return t
         return None
 
@@ -301,7 +301,10 @@ class TaskPlanner:
 
     async def _run_writing_phase(self) -> str:
         """写作阶段：按 write_mode 决定串行 / 批次并行。"""
-        total = self.orch.total_chapters or (self.plan.total_chapters if self.plan else 1)
+        # 优先用 plan.total_chapters（避免被 orchestrator 默认值 5 干扰），
+        # orchestrator.total_chapters 在 outlining 阶段会被设置，作为后备
+        plan_total = self.plan.total_chapters if self.plan else 0
+        total = plan_total or self.orch.total_chapters or 1
         write_mode = self.plan.write_mode if self.plan else "sequential"
 
         if write_mode == "batch":
