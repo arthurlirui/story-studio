@@ -40,7 +40,11 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # 标准 action 枚举（仅用于文档/校验，不强制）
-ACTIONS = ("write", "edit", "continuity", "review", "summary", "plan", "merge")
+# M10 修复：补齐 research/innovate/task 三个新增 action
+ACTIONS = (
+    "write", "edit", "continuity", "review", "summary", "plan", "merge",
+    "research", "innovate", "task",
+)
 
 # 摘要截断长度
 _EXCERPT_LIMIT = 200

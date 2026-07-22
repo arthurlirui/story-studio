@@ -28,7 +28,18 @@ from agents import (
 )
 from agents.llm_client import client as llm_client
 from agents.text_cleaner import clean_chapter_body, strip_existing_title
-from orchestrator_state import RunState, new_job_id, PHASE_RESEARCH, PHASE_INNOVATE
+from orchestrator_state import (
+    RunState,
+    new_job_id,
+    PHASE_IDLE,
+    PHASE_RESEARCH,
+    PHASE_INNOVATE,
+    PHASE_PLANNING,
+    PHASE_BUILDING,
+    PHASE_OUTLINING,
+    PHASE_WRITING,
+    PHASE_COMPLETE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +194,7 @@ class StoryOrchestrator:
 
         # Project state
         self.project_name: str = ""
-        self.phase: str = "idle"
+        self.phase: str = PHASE_IDLE
         self.current_chapter: int = 0
         self.total_chapters: int = 0
         self.conversation_log: list[dict] = []
@@ -312,9 +323,24 @@ class StoryOrchestrator:
         logger.info("phase_research: 开始调研 (provider=%s)", self.web_search.name)
 
         t0 = time.time()
+        # C4 修复：从 cfg 读 research_max_topics，默认 4
+        from agents.topic_researcher import DEFAULT_TOPICS
+        max_topics = int(getattr(self.cfg, "research_max_topics", 4) or 4)
+        if max_topics < len(DEFAULT_TOPICS):
+            topics = DEFAULT_TOPICS[:max_topics]
+        elif max_topics > len(DEFAULT_TOPICS):
+            logger.warning(
+                "phase_research: research_max_topics=%d 超过 DEFAULT_TOPICS 数量 %d，"
+                "仅使用前 %d 个", max_topics, len(DEFAULT_TOPICS), len(DEFAULT_TOPICS),
+            )
+            topics = DEFAULT_TOPICS
+        else:
+            topics = DEFAULT_TOPICS
         try:
             results = await self.topic_researcher.research(
                 brief, self.web_search, self.knowledge,
+                topics=topics,
+                on_usage=self._record_usage,  # C2 修复：每次 think() 后累加 usage
             )
         except Exception as e:
             logger.exception("phase_research 异常: %s", e)
@@ -326,7 +352,8 @@ class StoryOrchestrator:
             )
             return f"## 调研失败\n\n{e}"
 
-        self._record_usage(self.topic_researcher)
+        # C2 修复后：usage 已通过 on_usage 回调逐次累加，不再需要循环外再调一次
+        # （重复调用会导致最后一次 think() 的 usage 被二次计入）
 
         # 汇总摘要
         summary_lines = []
@@ -386,7 +413,7 @@ class StoryOrchestrator:
 
     async def phase_planning(self, user_request: str) -> str:
         """策划阶段: 接收用户需求，生成创作企划."""
-        self._set_phase("planning")
+        self._set_phase(PHASE_PLANNING)
         self._log("user", user_request)
 
         # Showrunner 分析需求
@@ -424,7 +451,7 @@ class StoryOrchestrator:
 
     async def phase_building(self) -> str:
         """建立阶段: 世界观 + 角色设定."""
-        self._set_phase("building")
+        self._set_phase(PHASE_BUILDING)
         plan = self.knowledge.load_world("plan")
         context = f"项目创作企划:\n{plan}"
 
@@ -463,7 +490,7 @@ class StoryOrchestrator:
         若未显式指定章节数，尝试从企划书中解析"建议章节数"；
         解析失败则默认 10 章。
         """
-        self._set_phase("outlining")
+        self._set_phase(PHASE_OUTLINING)
 
         if total_chapters is None:
             plan = self.knowledge.load_world("plan")
@@ -597,7 +624,7 @@ class StoryOrchestrator:
         自动修订：若 Showrunner 给出 REVISE/REJECT，将评审意见回灌给 scene_writer
         重写，最多 self.cfg.max_rounds 轮。PASS 或耗尽轮次则交付（耗尽时标警告）。
         """
-        self._set_phase("writing")
+        self._set_phase(PHASE_WRITING)
 
         if chapter_num:
             self.current_chapter = chapter_num
@@ -708,7 +735,7 @@ class StoryOrchestrator:
             self._record_usage(writer)
             if not chapter_text or chapter_text.startswith("[LLM API error"):
                 await self.worklog.append(
-                    phase="writing", chapter=chapter_num, batch_id=batch_id,
+                    phase=PHASE_WRITING, chapter=chapter_num, batch_id=batch_id,
                     agent=writer.name, role=writer.role, action="write",
                     model=getattr(writer, "model", ""), round_n=round_n,
                     usage=getattr(writer, "last_usage", None) or {},
@@ -718,7 +745,7 @@ class StoryOrchestrator:
                 return f"## 第 {chapter_num} 章 ❌ 写作失败\n\n{chapter_text}"
             self._log("scene_writer", f"Chapter {chapter_num} round {round_n}: {chapter_text[:100]}...")
             await self.worklog.append(
-                phase="writing", chapter=chapter_num, batch_id=batch_id,
+                phase=PHASE_WRITING, chapter=chapter_num, batch_id=batch_id,
                 agent=writer.name, role=writer.role, action="write",
                 model=getattr(writer, "model", ""), round_n=round_n,
                 usage=getattr(writer, "last_usage", None) or {},
@@ -739,7 +766,7 @@ class StoryOrchestrator:
             self._log("editor", edited[:200])
             self.knowledge.save_chapter(chapter_num, edited, "editor")
             await self.worklog.append(
-                phase="writing", chapter=chapter_num, batch_id=batch_id,
+                phase=PHASE_WRITING, chapter=chapter_num, batch_id=batch_id,
                 agent=editor.name, role=editor.role, action="edit",
                 model=getattr(editor, "model", ""), round_n=round_n,
                 usage=getattr(editor, "last_usage", None) or {},
@@ -759,7 +786,7 @@ class StoryOrchestrator:
             if save_continuity and continuity and not continuity.startswith("[LLM API error"):
                 self.knowledge.save_continuity_log(continuity)
             await self.worklog.append(
-                phase="writing", chapter=chapter_num, batch_id=batch_id,
+                phase=PHASE_WRITING, chapter=chapter_num, batch_id=batch_id,
                 agent=continuity_keeper.name, role=continuity_keeper.role,
                 action="continuity", model=getattr(continuity_keeper, "model", ""),
                 round_n=round_n,
@@ -786,7 +813,7 @@ class StoryOrchestrator:
             # 记录本轮评审（供事后审计）
             self.knowledge.save_chapter_review(chapter_num, round_n, verdict, review)
             await self.worklog.append(
-                phase="writing", chapter=chapter_num, batch_id=batch_id,
+                phase=PHASE_WRITING, chapter=chapter_num, batch_id=batch_id,
                 agent=showrunner.name, role=showrunner.role, action="review",
                 model=getattr(showrunner, "model", ""), round_n=round_n, verdict=verdict,
                 usage=getattr(showrunner, "last_usage", None) or {},
@@ -835,7 +862,7 @@ class StoryOrchestrator:
                 self.knowledge.save_chapter_summary(chapter_num, summary[:200])
                 self._log("literary_advisor", f"Summary Ch{chapter_num}: {summary[:80]}...")
                 await self.worklog.append(
-                    phase="writing", chapter=chapter_num, batch_id=batch_id,
+                    phase=PHASE_WRITING, chapter=chapter_num, batch_id=batch_id,
                     agent=self.literary_advisor.name, role=self.literary_advisor.role,
                     action="summary", model=getattr(self.literary_advisor, "model", ""),
                     usage=getattr(self.literary_advisor, "last_usage", None) or {},
@@ -891,7 +918,7 @@ class StoryOrchestrator:
             start_chapter: 起始章节号
             count: 要写的章节数（自动截断到 scene_writers 数量）
         """
-        self._set_phase("writing")
+        self._set_phase(PHASE_WRITING)
         outline = self.knowledge.load_outline()
 
         # 受可用编剧数约束
@@ -1027,7 +1054,7 @@ class StoryOrchestrator:
         终审硬门：若 Showrunner 终审非 PASS，重跑 final_edit 最多 max_rounds 次；
         仍非 PASS 则在 _final.md 头部插警告但仍交付（不卡死流程）。
         """
-        self._set_phase("complete")
+        self._set_phase(PHASE_COMPLETE)
         full_text = self.knowledge.get_all_chapters_text()
         context = self.knowledge.build_context(max_chars=self.cfg.max_context_chars)
 
@@ -1111,12 +1138,17 @@ class StoryOrchestrator:
             f"## 输出\n- 润色版 MD: {output_path}\n"
             f"{delivery}"
         )
-        # 关闭共享连接池（项目完结，不再有 LLM 调用）
+        # 关闭共享连接池（项目完结，不再有 LLM / 搜索调用）
         if hasattr(self.client, "aclose"):
             try:
                 await self.client.aclose()
             except Exception as e:
                 logger.warning("关闭 LLM 连接池失败: %s", e)
+        if hasattr(self.web_search, "aclose"):
+            try:
+                await self.web_search.aclose()
+            except Exception as e:
+                logger.warning("关闭 web_search 连接池失败: %s", e)
         return summary
 
     async def _finalize_delivery(self, full_text: str) -> str:
@@ -1608,14 +1640,14 @@ class StoryOrchestrator:
         有 highlights 但无 world → planning；有 research 但无 highlights → innovate。
         """
         if (self.knowledge.story_dir / "final.md").exists():
-            return "complete"
+            return PHASE_COMPLETE
         if self.knowledge.list_chapters():
-            return "writing"
+            return PHASE_WRITING
         if self.knowledge.load_outline().strip():
-            return "outlining"
+            return PHASE_OUTLINING
         has_world = bool(self.knowledge.list_world_docs() or self.knowledge.list_characters())
         if has_world:
-            return "building"
+            return PHASE_BUILDING
         # research / innovate 推断（仅当完全没有 world 产物时才考虑）
         research_topics = set(self.knowledge.list_research_topics())
         has_highlights = "highlights" in research_topics
@@ -1623,5 +1655,5 @@ class StoryOrchestrator:
         if has_research and not has_highlights:
             return PHASE_INNOVATE
         if has_highlights:
-            return "planning"
-        return "idle"
+            return PHASE_PLANNING
+        return PHASE_IDLE

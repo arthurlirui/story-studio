@@ -27,7 +27,15 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import load_config
-from jobs import JobRunner, JOB_RUNNING, JOB_QUEUED
+from jobs import (
+    JobRunner,
+    JOB_RUNNING,
+    JOB_QUEUED,
+    JOB_SUCCEEDED,
+    JOB_FAILED,
+    make_on_progress,
+    finalize_job_after_run_all,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -261,26 +269,73 @@ async def run_task(job_id: str, task_n: int):
     if task.status in ("done", "running"):
         planner.reset_task(task_n)
         task = next((t for t in planner.plan.tasks if t.id == task_n), task)
+    # H4 修复：单任务执行也更新 job 状态，便于前端轮询
+    runner = get_runner()
+    job.status = JOB_RUNNING
+    job.phase = task.phase
+    runner._save_index()
     try:
         result = await planner.run_task(task)
+        job.status = JOB_SUCCEEDED
+        job.touch()
+        runner._save_index()
         return {"task_id": task_n, "status": task.status, "result": result[:1000]}
     except Exception as e:
+        job.status = JOB_FAILED
+        job.error = str(e)
+        job.touch()
+        runner._save_index()
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/novels/{job_id}/run-all")
 async def run_all_tasks(job_id: str):
     """按序执行该 job 的所有未完成任务。"""
-    planner, _orch, job = _build_planner_for_job(job_id)
+    planner, orch, job = _build_planner_for_job(job_id)
     if job.status == JOB_RUNNING or job.status == JOB_QUEUED:
         raise HTTPException(status_code=409, detail="job still running")
     if planner.load_plan() is None:
         raise HTTPException(status_code=404, detail="task plan not found")
+    runner = get_runner()
+    # H4 修复：显式标记 running，run_all 期间 on_progress 持续更新 phase/progress
+    job.status = JOB_RUNNING
+    job.touch()
+    runner._save_index()
+    _on_progress = make_on_progress(
+        job, planner, orch, on_save=runner._save_index
+    )
     try:
-        await planner.run_all(stop_on_failure=True)
-        return {"job_id": job_id, "summary": planner.summary()}
+        await planner.run_all(on_progress=_on_progress, stop_on_failure=True)
     except Exception as e:
+        job.status = JOB_FAILED
+        job.error = str(e)
+        job.touch()
+        runner._save_index()
         raise HTTPException(status_code=500, detail=str(e))
+    # H6 修复：根据 planner.summary 判定 job 状态（run_all 吞了异常，需显式检查）
+    s = planner.summary()
+    if s.get("failed", 0) > 0:
+        # 部分失败：标记 job failed 但返回 200 + partial_failure（便于前端展示哪些 task 失败）
+        job.status = JOB_FAILED
+        failed_tasks = [
+            f"#{t.id}({t.phase})" for t in planner.plan.tasks if t.status == "failed"
+        ]
+        job.error = f"任务失败 {s['failed']} 个：{', '.join(failed_tasks)}"
+        job.touch()
+        runner._save_index()
+        return {
+            "job_id": job_id,
+            "status": "partial_failure",
+            "summary": s,
+            "failed_tasks": [
+                {"id": t.id, "phase": t.phase, "error": t.error}
+                for t in planner.plan.tasks if t.status == "failed"
+            ],
+        }
+    # 全部成功：填充 result
+    finalize_job_after_run_all(job, planner, orch, fallback_total=0)
+    runner._save_index()
+    return {"job_id": job_id, "status": "succeeded", "summary": s}
 
 
 @app.get("/health")

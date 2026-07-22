@@ -94,6 +94,34 @@ class TestGetAllResearch:
         # 总和受预算限制
         assert text.count("Y") <= 1500
 
+    def test_excludes_highlights_slug(self, store: KnowledgeStore):
+        """C3 修复：highlights 是 Innovator 产物，不应被 get_all_research 当作调研输入。"""
+        store.save_research("hot_events", "## 真正的调研")
+        store.save_research("highlights", "## 创新亮点清单\n旧的亮点内容")
+        text = store.get_all_research()
+        assert "真正的调研" in text
+        assert "创新亮点清单" not in text
+        assert "旧的亮点内容" not in text
+        # list_research_topics 仍应包含 highlights（人工查看需要）
+        assert "highlights" in store.list_research_topics()
+
+    def test_priority_order_before_other_topics(self, store: KnowledgeStore):
+        """C5 修复：变体层按 _RESEARCH_PRIORITY 顺序输出，重要主题优先占预算。
+
+        构造字母序靠前的非优先主题 + 字母序靠后的优先主题，验证优先主题先出现。
+        """
+        # zzz_other 字母序最靠后但不在优先表；similar_novels 字母序靠后但在优先表
+        store.save_research("zzz_other", "Z" * 1000)
+        store.save_research("similar_novels", "S" * 1000)
+        text = store.get_all_research(max_per_doc=2000, total_budget=10000)
+        # similar_novels 应先于 zzz_other 出现（按优先级，而非字母序）
+        sim_pos = text.find("similar_novels")
+        zzz_pos = text.find("zzz_other")
+        assert 0 <= sim_pos < zzz_pos, (
+            f"similar_novels 应先于 zzz_other（按优先级），"
+            f"got sim={sim_pos}, zzz={zzz_pos}"
+        )
+
 
 class TestBuildContextInjection:
     def test_research_in_build_context(self, store: KnowledgeStore):

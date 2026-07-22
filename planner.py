@@ -72,13 +72,12 @@ class TaskPlan:
     def save(self, path: Path) -> None:
         """原子写到 task_plan.json。"""
         self.updated_at = time.strftime("%Y-%m-%dT%H:%M:%S")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(
+        # M3-dup 修复：复用 knowledge._atomic_write_text，避免逻辑重复
+        from agents.knowledge import _atomic_write_text
+        _atomic_write_text(
+            path,
             json.dumps(self.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
-        os.replace(tmp, path)
 
     @classmethod
     def load(cls, path: Path) -> "TaskPlan | None":
@@ -162,11 +161,16 @@ class TaskPlanner:
     def build_plan(
         self,
         brief: str,
-        total_chapters: int = 10,
+        total_chapters: int | None = None,
         write_mode: str = "sequential",
         job_id: str = "",
     ) -> TaskPlan:
-        """生成 7 任务清单。research_enabled=False 时把 research/innovate 标记 skipped。"""
+        """生成 7 任务清单。research_enabled=False 时把 research/innovate 标记 skipped。
+
+        total_chapters=None 时 plan.total_chapters 存为 0，由 outlining 阶段的
+        LLM outline 解析决定实际章节数（H1 修复：保留 orchestrator 原本的
+        「从 outline 解析章节建议数」行为，不被硬编码默认值覆盖）。
+        """
         tasks: list[Task] = []
         for i, (name, phase) in enumerate(_DEFAULT_TASK_DEFS, start=1):
             task = Task(id=i, name=name, phase=phase)
@@ -177,7 +181,7 @@ class TaskPlanner:
         self.plan = TaskPlan(
             job_id=job_id or getattr(self.orch, "job_id", ""),
             brief=brief,
-            total_chapters=total_chapters,
+            total_chapters=total_chapters or 0,
             write_mode=write_mode if write_mode in ("sequential", "batch") else "sequential",
             tasks=tasks,
         )
@@ -281,18 +285,24 @@ class TaskPlanner:
     async def _dispatch(self, task: Task) -> str:
         """分派到 orchestrator 对应 phase 方法。"""
         phase = task.phase
-        brief = self.plan.brief if self.plan else ""
+        # m5 修复：_dispatch 仅在 run_all/run_task 中被调用，self.plan 必非 None
+        brief = self.plan.brief
 
         if phase == PHASE_RESEARCH:
             return await self.orch.phase_research(brief)
         if phase == PHASE_INNOVATE:
-            return await self.orch.phase_innovate(self.orch.project_name or brief)
+            # M5 修复：传完整的 novel brief 而非 project_name（短书名不足以表达题材）
+            return await self.orch.phase_innovate(brief)
         if phase == PHASE_PLANNING:
             return await self.orch.phase_planning(brief)
         if phase == PHASE_BUILDING:
             return await self.orch.phase_building()
         if phase == PHASE_OUTLINING:
-            return await self.orch.phase_outlining(total_chapters=self.plan.total_chapters if self.plan else None)
+            # H1 修复：plan.total_chapters=0（用户未指定）时传 None，
+            # 让 orchestrator 从 outline 解析「建议章节数」
+            return await self.orch.phase_outlining(
+                total_chapters=self.plan.total_chapters or None,
+            )
         if phase == PHASE_WRITING:
             return await self._run_writing_phase()
         if phase == PHASE_COMPLETE:
@@ -300,12 +310,16 @@ class TaskPlanner:
         raise ValueError(f"TaskPlanner: 未知 phase={phase}")
 
     async def _run_writing_phase(self) -> str:
-        """写作阶段：按 write_mode 决定串行 / 批次并行。"""
-        # 优先用 plan.total_chapters（避免被 orchestrator 默认值 5 干扰），
-        # orchestrator.total_chapters 在 outlining 阶段会被设置，作为后备
-        plan_total = self.plan.total_chapters if self.plan else 0
-        total = plan_total or self.orch.total_chapters or 1
-        write_mode = self.plan.write_mode if self.plan else "sequential"
+        """写作阶段：按 write_mode 决定串行 / 批次并行。
+
+        H1 修复后的优先级：
+        1. plan.total_chapters（用户显式指定）
+        2. orchestrator.total_chapters（outlining 阶段从 outline 解析得到）
+        3. 兜底 10（防止 0 章导致空跑）
+        """
+        plan_total = self.plan.total_chapters
+        total = plan_total or self.orch.total_chapters or 10
+        write_mode = self.plan.write_mode
 
         if write_mode == "batch":
             batch_size = max(1, self.cfg.batch_size)

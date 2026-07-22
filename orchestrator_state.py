@@ -46,13 +46,12 @@ class RunState:
     def save(self, path: Path) -> None:
         """原子写到 run_state.json。"""
         self.touch()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(
+        # M3-dup 修复：复用 knowledge._atomic_write_text，避免逻辑重复
+        from agents.knowledge import _atomic_write_text
+        _atomic_write_text(
+            path,
             json.dumps(asdict(self), ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
-        os.replace(tmp, path)
 
     @classmethod
     def load(cls, path: Path) -> "RunState | None":

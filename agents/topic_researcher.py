@@ -81,6 +81,7 @@ class TopicResearcher(Agent):
         web_search: WebSearchProvider,
         knowledge: KnowledgeStore,
         topics: list[tuple[str, str, str]] | None = None,
+        on_usage: Any | None = None,
     ) -> dict[str, dict[str, Any]]:
         """执行一轮调研。
 
@@ -89,6 +90,9 @@ class TopicResearcher(Agent):
             web_search: 搜索 provider
             knowledge: 私有 KB
             topics: [(topic_slug, 中文名, 描述)]，缺省用 DEFAULT_TOPICS
+            on_usage: 可选回调，每次 think() 后调用（传入 self），用于累加 token 用量。
+                不传时，调用方只能在循环结束后看到最后一次 think() 的 self.last_usage，
+                会导致多次 think() 的累计丢失。
 
         Returns:
             {topic_slug: {"content": str, "sources": [{title, url}]}}
@@ -130,14 +134,24 @@ class TopicResearcher(Agent):
 
             try:
                 report = await self.think(prompt)
+                # C2 修复：每次 think() 后立即上报 usage，避免后续 think() 覆盖 last_usage
+                if on_usage is not None:
+                    on_usage(self)
             except Exception as e:
                 logger.exception("TopicResearcher: %s 综合报告失败: %s", slug, e)
+                # M8 修复：失败时不写错误占位符到 KB（避免污染下游 build_context）
                 report = f"## {cn_name}\n\n（调研综合失败：{e}）"
+                results[slug] = {
+                    "content": report,
+                    "sources": [{"title": h.title, "url": h.url} for h in hits],
+                }
+                continue
 
-            # 4. 落盘
+            # 4. 落盘（仅成功路径）
             try:
                 knowledge.save_research(slug, report)
-            except Exception as e:
+            except OSError as e:
+                # m10 修复：save_research 仅可能磁盘错误，收窄 except
                 logger.exception("TopicResearcher: 保存 %s 失败: %s", slug, e)
 
             results[slug] = {

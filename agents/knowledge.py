@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 # 连续性日志的 API 错误哨兵前缀（与 agents/llm_client._ERROR_SENTINEL 一致）
 _LLM_ERROR_PREFIX = "[LLM API error"
 
+# C5 修复：调研文档的输出优先级顺序，避免 sorted(glob) 字母序导致 highlights /
+# creation_techniques 抢占预算、把 similar_novels 挤出窗口。
+# 与 agents/topic_researcher.DEFAULT_TOPICS 的顺序保持一致。
+_RESEARCH_PRIORITY = ["hot_events", "important_events", "similar_novels", "creation_techniques"]
+
+# M8 修复：拒绝写入 KB 的错误占位符前缀（与 _LLM_ERROR_PREFIX 互补，覆盖中文化占位）
+_RESEARCH_ERROR_MARKERS = ("（调研综合失败", "（生成失败")
+
 
 def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
     """原子写：写到 tmp 文件后 os.replace 到目标，避免崩溃留下半截文件。"""
@@ -49,6 +57,12 @@ class KnowledgeStore:
                   self.revisions_dir, self.summaries_dir, self.research_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
+        # M7 修复：缓存全量拼接结果，键为 (目录最新 mtime, 参数)，save 时失效。
+        # 写作阶段每章 build_context 都会读，缓存可避免重复磁盘 IO。
+        self._research_cache: tuple[float, str, str] | None = None  # (mtime, args_key, content)
+        self._series_cache: tuple[float, str] | None = None  # (mtime, content)
+        self._world_summary_cache: tuple[float, str] | None = None  # (mtime, content)
+
     # ── Series layer (read-only) ───────────────────────────────
 
     def _series_md_files(self) -> list[Path]:
@@ -65,11 +79,18 @@ class KnowledgeStore:
         return ""
 
     def get_all_series_knowledge(self) -> str:
+        # M7: 缓存基于 series 目录 mtime
+        mtime = self._dir_mtime(self.series)
+        cache = self._series_cache
+        if cache is not None and cache[0] == mtime:
+            return cache[1]
         parts = []
         for doc in self._series_md_files():
             content = doc.read_text(encoding="utf-8")
             parts.append(f"### [Series] {doc.stem}\n\n{content}")
-        return "\n\n---\n\n".join(parts)
+        result = "\n\n---\n\n".join(parts)
+        self._series_cache = (mtime, result)
+        return result
 
     def list_series_docs(self) -> list[str]:
         return [f.stem for f in self._series_md_files()]
@@ -79,6 +100,8 @@ class KnowledgeStore:
     def save_world(self, name: str, content: str):
         filepath = self.world_dir / f"{name}.md"
         _atomic_write_text(filepath, content)
+        # M7: 失效 world_summary 缓存
+        self._world_summary_cache = None
 
     def load_world(self, name: str = "settings") -> str:
         filepath = self.world_dir / f"{name}.md"
@@ -95,6 +118,13 @@ class KnowledgeStore:
         return sorted(docs)
 
     def get_world_summary(self) -> str:
+        # M7: 缓存基于 (variant world mtime, series mtime)
+        v_mtime = self._dir_mtime(self.world_dir)
+        s_mtime = self._dir_mtime(self.series)
+        cache_key = f"{v_mtime}:{s_mtime}"
+        cache = self._world_summary_cache
+        if cache is not None and cache[0] == cache_key:
+            return cache[1]
         parts = []
         seen = set()
         for doc in sorted(self.world_dir.glob("*.md")):
@@ -109,7 +139,9 @@ class KnowledgeStore:
             content = doc.read_text(encoding="utf-8")
             summary = content[:500] + ("..." if len(content) > 500 else "")
             parts.append(f"## {doc.stem} (series)\n{summary}")
-        return "\n\n".join(parts)
+        result = "\n\n".join(parts)
+        self._world_summary_cache = (cache_key, result)
+        return result
 
     # ── Characters ─────────────────────────────────────────────
 
@@ -302,18 +334,39 @@ class KnowledgeStore:
         """调研主题 → 文件名 slug（与 _safe_name 同语义，复用实现）。"""
         return self._safe_name(topic)
 
+    def _dir_mtime(self, d: Path | None) -> float:
+        """目录最新 mtime（文件 mtime 的 max，空目录返回 0）。用于缓存键。"""
+        if not d or not d.exists():
+            return 0.0
+        try:
+            return max(f.stat().st_mtime for f in d.glob("*.md"))
+        except (OSError, ValueError):
+            return 0.0
+
     def _series_research_files(self) -> list[Path]:
         if not self.series_research or not self.series_research.exists():
             return []
         return sorted(self.series_research.glob("*.md"))
 
     def save_research(self, topic: str, content: str) -> None:
-        """写入变体级调研文档 research/{topic}.md（原子写）。"""
+        """写入变体级调研文档 research/{topic}.md（原子写）。
+
+        M8 修复：若 content 是 LLM 失败占位符（_LLM_ERROR_PREFIX 或中文化的
+        「调研综合失败」/「生成失败」），拒绝写入并警告，避免错误信息污染 KB
+        被下游 build_context 注入到所有 agent 的 prompt。
+        """
         if not content:
             logger.warning("跳过写入调研文档（空内容）: %s", topic)
             return
+        if content.lstrip().startswith(_LLM_ERROR_PREFIX) or any(
+            marker in content for marker in _RESEARCH_ERROR_MARKERS
+        ):
+            logger.warning("跳过写入调研文档（错误占位符）: %s", topic)
+            return
         filepath = self.research_dir / f"{self._safe_topic(topic)}.md"
         _atomic_write_text(filepath, content)
+        # M7: 写入后失效 research 缓存
+        self._research_cache = None
 
     def load_research(self, topic: str) -> str:
         """读取调研文档，变体层缺失时 fallback 系列层。"""
@@ -339,27 +392,50 @@ class KnowledgeStore:
         """拼接所有调研文档，每篇截断到 max_per_doc 字，总和截断到 total_budget。
 
         优先级：变体层在前（更相关），系列层在后。变体同名主题覆盖系列。
+
+        C3 修复：highlights 是 Innovator 的产物，不应作为调研输入再喂回下游 agent，
+        这里显式排除 highlights slug，避免自注入。
+        C5 修复：变体层按 _RESEARCH_PRIORITY 顺序输出，确保重要主题优先占用预算。
+        M7 修复：基于 (variant mtime, series mtime) 缓存拼接结果，每章 build_context 复用。
         """
+        # M7: 缓存命中检查
+        v_mtime = self._dir_mtime(self.research_dir)
+        s_mtime = self._dir_mtime(self.series_research)
+        args_key = f"{max_per_doc}:{total_budget}"
+        cache = self._research_cache
+        if cache is not None and cache[0] == f"{v_mtime}:{s_mtime}" and cache[1] == args_key:
+            return cache[2]
+
         parts: list[str] = []
         total = 0
         seen: set[str] = set()
 
-        # 变体层
-        for f in sorted(self.research_dir.glob("*.md")):
-            seen.add(f.stem)
+        # 变体层：按优先级顺序输出已知主题，再输出其他主题
+        variant_files = {f.stem: f for f in self.research_dir.glob("*.md")}
+        ordered_stems: list[str] = []
+        for slug in _RESEARCH_PRIORITY:
+            if slug in variant_files and slug != "highlights":
+                ordered_stems.append(slug)
+        for stem in sorted(variant_files.keys()):
+            if stem not in ordered_stems and stem != "highlights":
+                ordered_stems.append(stem)
+
+        for stem in ordered_stems:
+            f = variant_files[stem]
+            seen.add(stem)
             content = f.read_text(encoding="utf-8")
             # 按剩余预算截断
             remaining = total_budget - total
             if remaining <= 0:
                 break
             truncated = content[:min(max_per_doc, remaining)]
-            parts.append(f"### [Research/variant] {f.stem}\n\n{truncated}")
+            parts.append(f"### [Research/variant] {stem}\n\n{truncated}")
             total += len(truncated)
 
-        # 系列层（未与变体重名）
+        # 系列层（未与变体重名，且排除 highlights）
         if total < total_budget:
             for f in self._series_research_files():
-                if f.stem in seen:
+                if f.stem in seen or f.stem == "highlights":
                     continue
                 remaining = total_budget - total
                 if remaining <= 0:
@@ -369,7 +445,10 @@ class KnowledgeStore:
                 parts.append(f"### [Research/series] {f.stem}\n\n{truncated}")
                 total += len(truncated)
 
-        return "\n\n---\n\n".join(parts)
+        result = "\n\n---\n\n".join(parts)
+        # M7: 填充缓存
+        self._research_cache = (f"{v_mtime}:{s_mtime}", args_key, result)
+        return result
 
     def load_series_research(self) -> str:
         """仅系列层调研（供需要明确区分优先级的场景）。"""

@@ -1,8 +1,12 @@
-"""单元测试：planner.py 的 TaskPlanner / Task / TaskPlan。"""
+"""单元测试：planner.py 的 TaskPlanner / Task / TaskPlan。
+
+不依赖 pytest-asyncio：用 asyncio.new_event_loop() 手动驱动 async 用例。
+"""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -17,6 +21,80 @@ from orchestrator_state import (
 )
 
 
+def _run(coro):
+    """新建 event loop 跑完协程，替代 pytest-asyncio。"""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+class AsyncMethodTracker:
+    """把一个 async 函数包装成可记录调用次数/参数/异常的对象。
+
+    替代 AsyncMock，避免依赖 pytest-asyncio。
+    """
+
+    def __init__(self, return_value: str = "", side_effect: Exception | None = None):
+        self.return_value = return_value
+        self.side_effect = side_effect
+        self.call_count = 0
+        self.call_args_list: list[tuple] = []
+        self.call_kwargs_list: list[dict] = []
+
+    def __call__(self, *args, **kwargs):
+        self.call_count += 1
+        self.call_args_list.append(args)
+        self.call_kwargs_list.append(kwargs)
+
+        async def _coro():
+            if self.side_effect is not None:
+                raise self.side_effect
+            return self.return_value
+
+        return _coro()
+
+    @property
+    def called(self) -> bool:
+        return self.call_count > 0
+
+    def assert_called_once(self):
+        assert self.call_count == 1, f"expected 1 call, got {self.call_count}"
+
+    def assert_not_called(self):
+        assert self.call_count == 0, f"expected 0 calls, got {self.call_count}"
+
+    def assert_called_once_with(self, *args, **kwargs):
+        self.assert_called_once()
+        assert self.call_args_list[0] == args
+        assert self.call_kwargs_list[0] == kwargs
+
+    @property
+    def await_count(self) -> int:  # 与 AsyncMock 的接口对齐
+        return self.call_count
+
+    def assert_awaited_once(self):
+        self.assert_called_once()
+
+    def assert_awaited_once_with(self, *args, **kwargs):
+        self.assert_called_once_with(*args, **kwargs)
+
+    def assert_not_awaited(self):
+        self.assert_not_called()
+
+    @property
+    def await_args(self):
+        """返回 SimpleNamespace(args=..., kwargs=...)，与 AsyncMock.await_args 对齐。"""
+        if not self.call_args_list:
+            return None
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            args=self.call_args_list[-1],
+            kwargs=self.call_kwargs_list[-1],
+        )
+
+
 @pytest.fixture
 def cfg(tmp_path: Path) -> StudioConfig:
     return StudioConfig(
@@ -25,28 +103,38 @@ def cfg(tmp_path: Path) -> StudioConfig:
     )
 
 
-@pytest.fixture
-def mock_orchestrator() -> MagicMock:
+def _make_mock_orchestrator() -> MagicMock:
+    """构造一个 mock orchestrator，phase_* 方法用 AsyncMethodTracker。"""
     orch = MagicMock()
     orch.job_id = "test_job_123"
     orch.project_name = "测试项目"
     orch.total_chapters = 5
     orch.current_chapter = 0
-    orch.phase_research = AsyncMock(return_value="调研完成")
-    orch.phase_innovate = AsyncMock(return_value="创新亮点清单")
-    orch.phase_planning = AsyncMock(return_value="企划完成")
-    orch.phase_building = AsyncMock(return_value="设定完成")
-    orch.phase_outlining = AsyncMock(return_value="大纲完成")
-    orch.phase_writing = AsyncMock(return_value="章节完成")
-    orch.phase_writing_batch = AsyncMock(return_value="批次完成")
-    orch.phase_complete = AsyncMock(return_value="完稿")
+    orch.phase_research = AsyncMethodTracker("调研完成")
+    orch.phase_innovate = AsyncMethodTracker("创新亮点清单")
+    orch.phase_planning = AsyncMethodTracker("企划完成")
+    orch.phase_building = AsyncMethodTracker("设定完成")
+    orch.phase_outlining = AsyncMethodTracker("大纲完成")
+    orch.phase_writing = AsyncMethodTracker("章节完成")
+    orch.phase_writing_batch = AsyncMethodTracker("批次完成")
+    orch.phase_complete = AsyncMethodTracker("完稿")
     return orch
+
+
+@pytest.fixture
+def mock_orchestrator() -> MagicMock:
+    return _make_mock_orchestrator()
 
 
 @pytest.fixture
 def mock_worklog() -> MagicMock:
     wl = MagicMock()
-    wl.append = AsyncMock()
+    # worklog.append 是 async，返回一个已完成的 coroutine
+    def _append(**kwargs):
+        async def _c():
+            return None
+        return _c()
+    wl.append = _append
     return wl
 
 
@@ -230,65 +318,58 @@ class TestStateChange:
 # ── run_task 分派 ─────────────────────────────────────────────
 
 class TestRunTask:
-    @pytest.mark.asyncio
-    async def test_dispatch_research(self, planner: TaskPlanner, mock_orchestrator):
+    def test_dispatch_research(self, planner: TaskPlanner, mock_orchestrator):
         planner.build_plan(brief="测试", total_chapters=5)
         task = planner.plan.tasks[0]  # research
-        await planner.run_task(task)
+        _run(planner.run_task(task))
         mock_orchestrator.phase_research.assert_awaited_once_with("测试")
         assert task.status == TASK_DONE
 
-    @pytest.mark.asyncio
-    async def test_dispatch_innovate(self, planner: TaskPlanner, mock_orchestrator):
+    def test_dispatch_innovate(self, planner: TaskPlanner, mock_orchestrator):
         planner.build_plan(brief="测试", total_chapters=5)
         task = planner.plan.tasks[1]  # innovate
-        await planner.run_task(task)
+        _run(planner.run_task(task))
         mock_orchestrator.phase_innovate.assert_awaited_once()
         assert task.status == TASK_DONE
 
-    @pytest.mark.asyncio
-    async def test_dispatch_planning(self, planner: TaskPlanner, mock_orchestrator):
+    def test_dispatch_planning(self, planner: TaskPlanner, mock_orchestrator):
         planner.build_plan(brief="测试 brief", total_chapters=5)
         task = planner.plan.tasks[2]  # planning
-        await planner.run_task(task)
+        _run(planner.run_task(task))
         mock_orchestrator.phase_planning.assert_awaited_once_with("测试 brief")
 
-    @pytest.mark.asyncio
-    async def test_dispatch_outlining_passes_total(self, planner: TaskPlanner, mock_orchestrator):
+    def test_dispatch_outlining_passes_total(self, planner: TaskPlanner, mock_orchestrator):
         planner.build_plan(brief="测试", total_chapters=7)
         task = planner.plan.tasks[4]  # outlining
-        await planner.run_task(task)
+        _run(planner.run_task(task))
         mock_orchestrator.phase_outlining.assert_awaited_once()
         call_kwargs = mock_orchestrator.phase_outlining.await_args.kwargs
         assert call_kwargs.get("total_chapters") == 7
 
-    @pytest.mark.asyncio
-    async def test_dispatch_writing_sequential(self, planner: TaskPlanner, mock_orchestrator):
+    def test_dispatch_writing_sequential(self, planner: TaskPlanner, mock_orchestrator):
         planner.build_plan(brief="测试", total_chapters=3, write_mode="sequential")
         task = planner.plan.tasks[5]  # writing
-        await planner.run_task(task)
+        _run(planner.run_task(task))
         assert mock_orchestrator.phase_writing.await_count == 3
         mock_orchestrator.phase_writing_batch.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_dispatch_writing_batch(self, planner: TaskPlanner, mock_orchestrator):
+    def test_dispatch_writing_batch(self, planner: TaskPlanner, mock_orchestrator):
         planner.build_plan(brief="测试", total_chapters=5, write_mode="batch")
         planner.cfg.batch_size = 2
         task = planner.plan.tasks[5]  # writing
-        await planner.run_task(task)
+        _run(planner.run_task(task))
         # 5 章按 batch_size=2 应该跑 3 批 (2+2+1)
         assert mock_orchestrator.phase_writing_batch.await_count == 3
         mock_orchestrator.phase_writing.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_failure_marks_failed_and_reraises(
+    def test_failure_marks_failed_and_reraises(
         self, planner: TaskPlanner, mock_orchestrator,
     ):
         planner.build_plan(brief="测试", total_chapters=5)
         mock_orchestrator.phase_research.side_effect = RuntimeError("boom")
         task = planner.plan.tasks[0]
         with pytest.raises(RuntimeError, match="boom"):
-            await planner.run_task(task)
+            _run(planner.run_task(task))
         assert task.status == TASK_FAILED
         assert "boom" in (task.error or "")
 
@@ -296,15 +377,14 @@ class TestRunTask:
 # ── run_all ───────────────────────────────────────────────────
 
 class TestRunAll:
-    @pytest.mark.asyncio
-    async def test_runs_all_pending_in_order(self, planner: TaskPlanner, mock_orchestrator):
+    def test_runs_all_pending_in_order(self, planner: TaskPlanner, mock_orchestrator):
         planner.build_plan(brief="测试", total_chapters=2, write_mode="sequential")
         progress_log = []
 
         def on_progress(t):
             progress_log.append((t.id, t.status))
 
-        await planner.run_all(on_progress=on_progress)
+        _run(planner.run_all(on_progress=on_progress))
 
         # 所有 7 任务都应被回调
         assert len(progress_log) == 7
@@ -321,11 +401,10 @@ class TestRunAll:
         mock_orchestrator.phase_outlining.assert_awaited_once()
         mock_orchestrator.phase_complete.assert_awaited_once()
 
-    @pytest.mark.asyncio
-    async def test_stops_on_failure(self, planner: TaskPlanner, mock_orchestrator):
+    def test_stops_on_failure(self, planner: TaskPlanner, mock_orchestrator):
         planner.build_plan(brief="测试", total_chapters=2)
         mock_orchestrator.phase_building.side_effect = RuntimeError("build 失败")
-        await planner.run_all(stop_on_failure=True)
+        _run(planner.run_all(stop_on_failure=True))
         # building 之前的任务应完成
         assert planner.plan.tasks[0].status == TASK_DONE  # research
         assert planner.plan.tasks[1].status == TASK_DONE  # innovate
@@ -337,8 +416,7 @@ class TestRunAll:
         assert planner.plan.tasks[5].status == TASK_PENDING
         mock_orchestrator.phase_outlining.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_continues_on_failure_when_configured(
+    def test_continues_on_failure_when_configured(
         self, planner: TaskPlanner, mock_orchestrator,
     ):
         planner.build_plan(brief="测试", total_chapters=2, write_mode="sequential")
@@ -350,7 +428,7 @@ class TestRunAll:
         mock_orchestrator.phase_outlining.side_effect = RuntimeError("no world")
         mock_orchestrator.phase_writing.side_effect = RuntimeError("no outline")
         mock_orchestrator.phase_complete.side_effect = RuntimeError("no chapters")
-        await planner.run_all(stop_on_failure=False)
+        _run(planner.run_all(stop_on_failure=False))
         # 每个任务都应被触达（不再被 building 失败阻塞）
         mock_orchestrator.phase_building.assert_awaited_once()
         mock_orchestrator.phase_outlining.assert_awaited_once()
@@ -364,8 +442,7 @@ class TestRunAll:
         assert planner.plan.tasks[5].status == TASK_FAILED  # writing
         assert planner.plan.tasks[6].status == TASK_FAILED  # complete
 
-    @pytest.mark.asyncio
-    async def test_resumes_from_existing_plan(
+    def test_resumes_from_existing_plan(
         self, planner: TaskPlanner, mock_orchestrator, tmp_path: Path,
     ):
         # 第一次跑：research/innovate 完成
@@ -380,7 +457,7 @@ class TestRunAll:
             plan_path=planner.plan_path,
         )
         new_planner.load_plan()
-        await new_planner.run_all()
+        _run(new_planner.run_all())
 
         # research/innovate 不应被再次调用
         mock_orchestrator.phase_research.assert_not_awaited()
@@ -390,11 +467,10 @@ class TestRunAll:
         # 所有任务最终都 done
         assert all(t.status == TASK_DONE for t in new_planner.plan.tasks)
 
-    @pytest.mark.asyncio
-    async def test_skips_skipped_tasks(self, planner: TaskPlanner, mock_orchestrator):
+    def test_skips_skipped_tasks(self, planner: TaskPlanner, mock_orchestrator):
         planner.cfg.research_enabled = False
         planner.build_plan(brief="测试", total_chapters=2, write_mode="sequential")
-        await planner.run_all()
+        _run(planner.run_all())
         # research/innovate 被跳过，不应被调用
         mock_orchestrator.phase_research.assert_not_awaited()
         mock_orchestrator.phase_innovate.assert_not_awaited()
@@ -403,3 +479,23 @@ class TestRunAll:
         # research/innovate 状态保持 skipped
         assert planner.plan.tasks[0].status == TASK_SKIPPED
         assert planner.plan.tasks[1].status == TASK_SKIPPED
+
+
+# ── 边缘用例 ────────────────────────────────────────────────
+
+
+class TestEdgeCases:
+    """plan 未初始化等边缘场景。"""
+
+    def test_run_all_raises_if_plan_none(self, planner: TaskPlanner):
+        """run_all 在 plan 未初始化时应 raise RuntimeError。"""
+        # 不调 build_plan，plan 仍为 None
+        with pytest.raises(RuntimeError, match="plan 未初始化"):
+            _run(planner.run_all())
+
+    def test_run_task_raises_if_plan_none(self, planner: TaskPlanner):
+        """run_task 在 plan 未初始化时应 raise RuntimeError。"""
+        from planner import Task
+        task = Task(id=1, name="测试", phase=PHASE_RESEARCH)
+        with pytest.raises(RuntimeError, match="plan 未初始化"):
+            _run(planner.run_task(task))
