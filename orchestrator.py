@@ -456,6 +456,12 @@ class StoryOrchestrator:
 
     async def phase_planning(self, user_request: str) -> str:
         """策划阶段: 接收用户需求，生成创作企划."""
+        # 幂等守卫：已有企划书则跳过（断电恢复不重跑已完成阶段）
+        existing_plan = self.knowledge.load_world("plan")
+        if existing_plan.strip():
+            logger.info("恢复：企划书已存在，跳过 phase_planning")
+            self._set_phase(PHASE_PLANNING)
+            return existing_plan
         self._set_phase(PHASE_PLANNING)
         self._log("user", user_request)
 
