@@ -25,6 +25,9 @@ DEFAULT_TIMEOUT = 300.0
 
 # 错误哨兵：所有 API 错误统一以此前缀返回，便于调用方用 startswith 检测
 _ERROR_SENTINEL = "[LLM API error: {}]"
+# 哨兵前缀常量：供 orchestrator / knowledge 等模块统一引用，避免散落的字符串字面量
+# 在格式调整时漏改。与 _ERROR_SENTINEL 的前半段保持一致。
+LLM_ERROR_PREFIX = "[LLM API error"
 
 
 class LLMClient:
@@ -141,11 +144,8 @@ class LLMClient:
                 continue
 
             except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:
-                    delay = min(BASE_DELAY * (2 ** attempt), MAX_DELAY)
-                    logger.warning("Rate limited (429), retry %.1fs (attempt %d/%d)", delay, attempt + 1, MAX_RETRIES)
-                    await asyncio.sleep(delay)
-                    continue
+                # 429 在上方 resp.status_code == 429 分支已处理并 continue，
+                # 能走到这里说明是其他 4xx/5xx，直接终止重试。
                 last_error = e
                 break
 
@@ -162,7 +162,11 @@ class LLMClient:
         payload: dict[str, Any],
         headers: dict[str, str],
     ) -> AsyncIterator[str]:
-        """Streaming chat iterator. Yields reasoning tokens first, then content tokens."""
+        """Streaming chat iterator. Yields reasoning tokens first, then content tokens.
+
+        流式响应的 token usage 通常在最后一个 chunk 的 `usage` 字段里；
+        这里在迭代过程中持续更新 self.last_usage，使成本核算不丢失流式调用的用量。
+        """
         last_error: Exception | None = None
 
         for attempt in range(MAX_RETRIES):
@@ -192,6 +196,14 @@ class LLMClient:
 
                             try:
                                 chunk = json.loads(data_str)
+                                # 部分 OpenAI 兼容服务在末尾 chunk 携带累计 usage
+                                usage = chunk.get("usage") if isinstance(chunk, dict) else None
+                                if usage and isinstance(usage, dict):
+                                    self.last_usage = {
+                                        "prompt_tokens": int(usage.get("prompt_tokens", 0)),
+                                        "completion_tokens": int(usage.get("completion_tokens", 0)),
+                                        "total_tokens": int(usage.get("total_tokens", 0)),
+                                    }
                                 choices = chunk.get("choices", [])
                                 if not choices:
                                     continue

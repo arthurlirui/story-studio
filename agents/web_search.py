@@ -48,6 +48,10 @@ class WebSearchProvider(ABC):
         """执行搜索，返回结果列表。失败时返回空列表（不抛异常）。"""
         ...
 
+    async def aclose(self) -> None:
+        """释放底层 HTTP 连接池（多次调用安全）。子类按需 override。"""
+        return
+
 
 # ── Doubao / FeedCoop ────────────────────────────────────────────────
 
@@ -63,7 +67,28 @@ class DoubaoSearchProvider(WebSearchProvider):
     def __init__(self, api_key: str, endpoint: str = "", timeout: float = 30.0):
         self.api_key = api_key
         self.endpoint = endpoint or self.DEFAULT_ENDPOINT
-        self.timeout = timeout
+        # C1 修复：流式响应需要更长的 read timeout，单独区分 connect/read/write/pool
+        if isinstance(timeout, httpx.Timeout):
+            self.timeout = timeout
+        else:
+            self.timeout = httpx.Timeout(
+                connect=10.0, read=float(timeout), write=10.0, pool=10.0,
+            )
+        # M1-web_search 修复：复用 httpx.AsyncClient 连接池，避免每次 search 重建
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        # 仅当未初始化时创建；aclose 后置为 None。is_closed 检查通过 getattr
+        # 容错（mock 可能无此属性）但仅在 _client 不为 None 时生效。
+        if self._client is not None:
+            return self._client
+        self._client = httpx.AsyncClient(timeout=self.timeout)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and not getattr(self._client, "is_closed", False):
+            await self._client.aclose()
+        self._client = None
 
     async def search(self, query: str, count: int = 5) -> list[SearchResult]:
         if not self.api_key:
@@ -86,26 +111,26 @@ class DoubaoSearchProvider(WebSearchProvider):
         }
 
         results: list[SearchResult] = []
+        client = self._get_client()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                async with client.stream(
-                    "POST", self.endpoint, headers=headers, json=body
-                ) as resp:
-                    if resp.status_code != 200:
-                        logger.warning(
-                            "Doubao search '%s' status=%d",
-                            query, resp.status_code,
-                        )
-                        return []
-                    # 流式 NDJSON：逐行解析
-                    async for line in resp.aiter_lines():
-                        if not line:
-                            continue
-                        parsed = self._parse_line(line, query)
-                        if parsed:
-                            results.extend(parsed)
-                            if len(results) >= count:
-                                break
+            async with client.stream(
+                "POST", self.endpoint, headers=headers, json=body
+            ) as resp:
+                if resp.status_code != 200:
+                    logger.warning(
+                        "Doubao search '%s' status=%d",
+                        query, resp.status_code,
+                    )
+                    return []
+                # 流式 NDJSON：逐行解析
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    parsed = self._parse_line(line, query)
+                    if parsed:
+                        results.extend(parsed)
+                        if len(results) >= count:
+                            break
         except Exception as e:
             logger.warning("Doubao search '%s' failed: %s", query, e)
             return []
@@ -119,8 +144,8 @@ class DoubaoSearchProvider(WebSearchProvider):
         except (json.JSONDecodeError, ValueError):
             return []
 
-        # 整体错误响应
-        if isinstance(data, dict) and data.get("error"):
+        # 整体错误响应（m1 修复：用 is not None 判断，避免 error=False/0 被误判为有错）
+        if isinstance(data, dict) and data.get("error") is not None:
             logger.warning("Doubao search error: %s", data.get("error"))
             return []
 
@@ -183,6 +208,20 @@ class BochaSearchProvider(WebSearchProvider):
         self.api_key = api_key
         self.endpoint = endpoint or self.DEFAULT_ENDPOINT
         self.timeout = timeout
+        # M1-web_search 修复：复用 httpx.AsyncClient 连接池
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        # 仅当未初始化时创建；aclose 后置为 None。
+        if self._client is not None:
+            return self._client
+        self._client = httpx.AsyncClient(timeout=self.timeout)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and not getattr(self._client, "is_closed", False):
+            await self._client.aclose()
+        self._client = None
 
     async def search(self, query: str, count: int = 5) -> list[SearchResult]:
         if not self.api_key:
@@ -192,23 +231,23 @@ class BochaSearchProvider(WebSearchProvider):
         headers = {"Authorization": f"Bearer {self.api_key}"}
         params = {"query": query, "count": count}
         results: list[SearchResult] = []
+        client = self._get_client()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(
-                    self.endpoint, params=params, headers=headers, timeout=self.timeout,
-                )
-                if resp.status_code != 200:
-                    logger.warning("Bocha search '%s' status=%d", query, resp.status_code)
-                    return []
-                data = resp.json()
-                items = data.get("data", {}).get("webPages", {}).get("value", [])
-                for r in items:
-                    results.append(SearchResult(
-                        title=r.get("name", ""),
-                        snippet=r.get("snippet", ""),
-                        url=r.get("url", ""),
-                        source=self.name,
-                    ))
+            resp = await client.get(
+                self.endpoint, params=params, headers=headers, timeout=self.timeout,
+            )
+            if resp.status_code != 200:
+                logger.warning("Bocha search '%s' status=%d", query, resp.status_code)
+                return []
+            data = resp.json()
+            items = data.get("data", {}).get("webPages", {}).get("value", [])
+            for r in items:
+                results.append(SearchResult(
+                    title=r.get("name", ""),
+                    snippet=r.get("snippet", ""),
+                    url=r.get("url", ""),
+                    source=self.name,
+                ))
         except Exception as e:
             logger.warning("Bocha search '%s' failed: %s", query, e)
             return []
@@ -224,7 +263,8 @@ class MockSearchProvider(WebSearchProvider):
     name = "mock"
 
     async def search(self, query: str, count: int = 5) -> list[SearchResult]:
-        logger.debug("MockSearchProvider: query='%s' (返回空)", query)
+        # m3 修复：debug 在生产环境不可见，用 warning 让用户注意到搜索被跳过
+        logger.warning("MockSearchProvider: query='%s' (返回空)", query)
         return []
 
 
@@ -239,8 +279,11 @@ def get_search_provider(cfg: Any) -> WebSearchProvider:
     api_key = getattr(cfg, "web_search_api_key", "") or ""
     endpoint = getattr(cfg, "web_search_endpoint", "") or ""
 
+    # m4 修复：info 级别日志记录实际选中的 provider，便于排查"为什么没搜索"
     if provider_name == "doubao":
+        logger.info("get_search_provider: 选用 doubao (endpoint=%s)", endpoint or "default")
         return DoubaoSearchProvider(api_key, endpoint)
     if provider_name == "bocha":
+        logger.info("get_search_provider: 选用 bocha (endpoint=%s)", endpoint or "default")
         return BochaSearchProvider(api_key, endpoint)
     return MockSearchProvider()

@@ -79,11 +79,13 @@ class Innovator(Agent):
             highlights = await self.think(prompt)
         except Exception as e:
             logger.exception("Innovator: 产出亮点失败: %s", e)
-            highlights = f"## 创新亮点清单\n\n（生成失败：{e}）"
+            # M8 修复：失败时不落盘错误占位符，避免污染下游 build_context
+            return f"## 创新亮点清单\n\n（生成失败：{e}）"
 
         try:
             knowledge.save_research("highlights", highlights)
-        except Exception as e:
+        except OSError as e:
+            # m10 修复：save_research 仅可能磁盘错误，收窄 except 避免 swallowing 编程错误
             logger.exception("Innovator: 保存 highlights 失败: %s", e)
 
         return highlights

@@ -38,6 +38,21 @@ def banner():
 """)
 
 
+def _format_job_progress(j) -> str:
+    """H2 修复：区分任务粒度和章节粒度进度。
+
+    writing 阶段 progress 是 (current_chapter, total_chapters)；
+    其他阶段 progress 是 (done_tasks, total_tasks)，task_progress 也填充。
+    """
+    if not j.progress or not j.progress[1]:
+        return "-"
+    if j.phase == "writing":
+        return f"chapters:{j.progress[0]}/{j.progress[1]}"
+    if j.task_progress and j.task_progress[1]:
+        return f"tasks:{j.task_progress[0]}/{j.task_progress[1]}"
+    return f"{j.progress[0]}/{j.progress[1]}"
+
+
 def help_text():
     print("""
 📋 可用命令:
@@ -45,7 +60,7 @@ def help_text():
   🎬 创作流程
   /new <需求>          — 开始新项目（输入创作需求）
   /research <brief>    — 调研热点/重要事件/同类小说/创作手法，沉淀到私有 KB
-  /plan [总章数]        — 生成 7 任务清单（调研→创新→策划→建立→大纲→写作→完稿）
+  /plan [总章数] [batch|sequential] — 生成 7 任务清单（调研→创新→策划→建立→大纲→写作→完稿）
   /tasks               — 查看任务清单与各任务状态
   /run-task [N]        — 执行第 N 个任务（缺省=下一个未完成的）
   /run-all             — 按序执行所有未完成任务
@@ -171,7 +186,29 @@ async def _dispatch_command(raw: str, orchestrator: StoryOrchestrator) -> bool:
         if phase == "idle":
             print("\n⏳ 还没有创建项目，先用 /new <需求> 开始。")
         elif phase == "research":
-            print("\n🔍 还未调研。用 `/research [brief]` 触发调研，或 `/plan` 生成任务清单。")
+            # H5 修复：research 阶段不再是死路。
+            # - 若已有调研产物（research/*.md）但无 highlights.md，推进到 innovate
+            # - 若无任何调研产物，提示用 /research 启动调研
+            research_topics = set(orchestrator.knowledge.list_research_topics())
+            has_highlights = "highlights" in research_topics
+            has_research = bool(research_topics - {"highlights"})
+            if has_highlights:
+                # 调研 + 创新都完成，推进到策划
+                print("\n🌍 调研与创新亮点已就绪，进入策划阶段...")
+                orchestrator._set_phase("planning")
+                result = await orchestrator.phase_planning(
+                    orchestrator.project_name or ""
+                )
+                print(f"\n✅ 策划完成!\n\n{result[:1000]}...\n\n输入 `/next` 进入设定阶段。")
+            elif has_research:
+                # 有调研但无亮点，推进到 innovate
+                print("\n💡 调研已就绪，进入创新亮点阶段...")
+                result = await orchestrator.phase_innovate(
+                    orchestrator.project_name or ""
+                )
+                print(f"\n✅ 创新亮点已生成!\n\n{result[:1000]}...\n\n输入 `/next` 进入策划阶段。")
+            else:
+                print("\n🔍 还未调研。用 `/research <brief>` 触发调研，或 `/plan` 生成任务清单。")
         elif phase == "innovate":
             print("\n💡 调研已就绪，进入创新亮点阶段...")
             result = await orchestrator.phase_innovate(
@@ -259,23 +296,35 @@ async def _dispatch_command(raw: str, orchestrator: StoryOrchestrator) -> bool:
 
     if raw.startswith("/plan"):
         parts = raw.split()
+        # M3 修复：无 project_name 时不静默用占位 brief，与 /research 一致
+        if not orchestrator.project_name:
+            print("❌ 请先用 /new <需求> 或 /research <brief> 设定项目，再用 /plan。")
+            return False
         total = orchestrator.total_chapters or 10
         if len(parts) > 1:
             parsed = _parse_int(parts[1], "总章节数")
             if parsed is None:
                 return False
             total = parsed
+        # M1 修复：可选第二参数 batch|sequential，默认 sequential
+        write_mode = "sequential"
+        if len(parts) > 2:
+            wm = parts[2].lower()
+            if wm in ("sequential", "batch"):
+                write_mode = wm
+            else:
+                print(f"⚠️ 未知 write_mode={wm}，使用默认 sequential")
         from planner import TaskPlanner
         planner = TaskPlanner(
             orchestrator, orchestrator.knowledge, orchestrator.cfg,
             orchestrator.worklog,
         )
         plan = planner.build_plan(
-            brief=orchestrator.project_name or "(未命名项目)",
+            brief=orchestrator.project_name,
             total_chapters=total,
-            write_mode="sequential",
+            write_mode=write_mode,
         )
-        print(f"\n📋 任务清单已生成（job_id={plan.job_id[:24]}, 共 {len(plan.tasks)} 任务）")
+        print(f"\n📋 任务清单已生成（job_id={plan.job_id[:24]}, {write_mode}, 共 {len(plan.tasks)} 任务）")
         for t in plan.tasks:
             icon = {"pending": "⏳", "running": "🔄", "done": "✅",
                     "failed": "❌", "skipped": "⏭️"}.get(t.status, "❓")
@@ -365,8 +414,17 @@ async def _dispatch_command(raw: str, orchestrator: StoryOrchestrator) -> bool:
         try:
             await planner.run_all(on_progress=_on_progress, stop_on_failure=True)
             s = planner.summary()
-            print(f"\n✅ 完成: {s['done']} 成功 / {s['failed']} 失败 / "
-                  f"{s['skipped']} 跳过 / {s['total']} 总计")
+            if s["failed"] > 0:
+                # H6 修复：run_all 不 re-raise，这里显式报错
+                failed_tasks = [
+                    f"#{t.id}({t.phase})" for t in planner.plan.tasks
+                    if t.status == "failed"
+                ]
+                print(f"\n⚠️ 部分失败: {s['failed']} 个任务 — {', '.join(failed_tasks)}")
+                print(f"   完成: {s['done']} 成功 / {s['skipped']} 跳过 / {s['total']} 总计")
+            else:
+                print(f"\n✅ 完成: {s['done']} 成功 / {s['failed']} 失败 / "
+                      f"{s['skipped']} 跳过 / {s['total']} 总计")
         except Exception as e:
             print(f"\n❌ 中断: {e}")
         return False
@@ -513,7 +571,7 @@ async def _dispatch_command(raw: str, orchestrator: StoryOrchestrator) -> bool:
         else:
             print(f"\n📋 后台 Job（{len(jobs)} 个）：")
             for j in jobs:
-                prog = f"{j.progress[0]}/{j.progress[1]}" if j.progress[1] else "-"
+                prog = _format_job_progress(j)
                 print(f"  {j.id}  [{j.status}]  phase={j.phase}  progress={prog}  {j.project_name}")
         print()
         return False
@@ -567,6 +625,17 @@ async def main():
             job_id = await runner.submit(brief, project_name=project_name)
             print(f"✅ 已提交后台 Job: {job_id}")
             print(f"   用 `python main.py --job {job_id}` 查看状态，`--job-cancel {job_id}` 取消")
+            # P1 修复：原代码 submit 后直接 return，asyncio.run 关闭事件循环会
+            # 取消刚启动的后台 _run_job 任务，job 永远不会真正执行。
+            # 改为等待后台任务完成（或被取消）后再退出。
+            task = runner._tasks.get(job_id)
+            if task is not None:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    print(f"⏹️ Job {job_id} 已取消")
+                except Exception as e:
+                    print(f"❌ Job {job_id} 失败: {e}")
             return
         elif sys.argv[1] == "--jobs":
             from jobs import JobRunner
@@ -576,7 +645,7 @@ async def main():
                 print("📭 暂无后台 Job。")
             else:
                 for j in jobs:
-                    prog = f"{j.progress[0]}/{j.progress[1]}" if j.progress[1] else "-"
+                    prog = _format_job_progress(j)
                     print(f"{j.id}  [{j.status}]  phase={j.phase}  progress={prog}  {j.project_name}")
             return
         elif sys.argv[1] == "--job" and len(sys.argv) > 2:

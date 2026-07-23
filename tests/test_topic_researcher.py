@@ -3,18 +3,29 @@
 用 mock client + mock WebSearchProvider 验证：
 - TopicResearcher.research 把搜索结果综合成报告并写入 knowledge.save_research
 - Innovator.innovate 读 knowledge.get_all_research 并产出 highlights，写入 knowledge
+
+不依赖 pytest-asyncio：用 asyncio.new_event_loop() 手动驱动 async 用例。
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from agents.innovator import Innovator
 from agents.knowledge import KnowledgeStore
 from agents.topic_researcher import DEFAULT_TOPICS, TopicResearcher
-from agents.web_search import MockSearchProvider, SearchResult
+from agents.web_search import SearchResult
+
+
+def _run(coro):
+    """新建 event loop 跑完协程，替代 pytest-asyncio。"""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 class FakeClient:
@@ -29,6 +40,17 @@ class FakeClient:
         resp = self.responses[self._idx % len(self.responses)]
         self._idx += 1
         return resp
+
+
+class FailingClient:
+    """模拟 LLM client，chat 总是抛异常。"""
+
+    def __init__(self, exc: Exception):
+        self.exc = exc
+        self.last_usage = None
+
+    async def chat(self, **kwargs) -> str:
+        raise self.exc
 
 
 class FakeWebSearch:
@@ -51,8 +73,7 @@ def store(tmp_path: Path) -> KnowledgeStore:
 # ── TopicResearcher ──────────────────────────────────────────
 
 class TestTopicResearcher:
-    @pytest.mark.asyncio
-    async def test_research_writes_to_kb(self, store: KnowledgeStore):
+    def test_research_writes_to_kb(self, store: KnowledgeStore):
         client = FakeClient(responses=["热点报告 v1", "重要事件报告", "同类小说报告", "创作手法报告"])
         researcher = TopicResearcher(
             "热点研究员", "Topic Researcher", "调研",
@@ -62,11 +83,11 @@ class TestTopicResearcher:
             SearchResult(title="t1", snippet="s1", url="http://a", source="test"),
         ])
 
-        results = await researcher.research(
+        results = _run(researcher.research(
             brief="一个关于剑客的故事",
             web_search=web_search,
             knowledge=store,
-        )
+        ))
 
         # 4 个主题都应被调研
         assert len(results) == 4
@@ -83,8 +104,7 @@ class TestTopicResearcher:
             assert "sources" in meta
             assert len(meta["sources"]) == 1
 
-    @pytest.mark.asyncio
-    async def test_research_empty_search_still_writes_report(self, store: KnowledgeStore):
+    def test_research_empty_search_still_writes_report(self, store: KnowledgeStore):
         client = FakeClient(responses=["基于内置知识的报告"] * 4)
         researcher = TopicResearcher(
             "热点研究员", "Topic Researcher", "调研",
@@ -92,11 +112,11 @@ class TestTopicResearcher:
         )
         web_search = FakeWebSearch(results=[])  # 搜索为空
 
-        results = await researcher.research(
+        results = _run(researcher.research(
             brief="故事 brief",
             web_search=web_search,
             knowledge=store,
-        )
+        ))
 
         # 即使搜索为空，报告也应写入
         for slug in [t[0] for t in DEFAULT_TOPICS]:
@@ -105,8 +125,7 @@ class TestTopicResearcher:
         for meta in results.values():
             assert meta["sources"] == []
 
-    @pytest.mark.asyncio
-    async def test_research_custom_topics(self, store: KnowledgeStore):
+    def test_research_custom_topics(self, store: KnowledgeStore):
         client = FakeClient(responses=["报告"] * 2)
         researcher = TopicResearcher(
             "热点研究员", "Topic Researcher", "调研",
@@ -118,20 +137,53 @@ class TestTopicResearcher:
             ("custom_a", "自定义A", "描述A"),
             ("custom_b", "自定义B", "描述B"),
         ]
-        results = await researcher.research(
+        results = _run(researcher.research(
             brief="brief", web_search=web_search,
             knowledge=store, topics=custom_topics,
-        )
+        ))
 
         assert set(results.keys()) == {"custom_a", "custom_b"}
         assert "custom_a" in store.list_research_topics()
+
+    def test_research_continues_after_web_search_exception(
+        self, store: KnowledgeStore,
+    ):
+        """web_search.search 抛异常时 research 不应中断，应继续处理后续 topic。"""
+        from agents.topic_researcher import TopicResearcher
+
+        client = FakeClient(responses=["## 报告\n内容"])
+        researcher = TopicResearcher(
+            "热点研究员", "TopicResearcher", "调研", client, model="light",
+        )
+
+        class _ExplodingSearch:
+            name = "explode"
+
+            def __init__(self):
+                self.calls = 0
+
+            async def search(self, query: str, count: int = 5):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("search boom")
+                # 后续调用正常返回空
+                return []
+
+        ws = _ExplodingSearch()
+        results = _run(researcher.research(
+            brief="brief", web_search=ws, knowledge=store,
+        ))
+
+        # 4 个 topic 都应被处理（即使第一个搜索抛异常）
+        assert len(results) == 4
+        # 第一个 topic 因搜索异常 hits=[]，但 LLM 仍应被调用产出报告
+        assert "hot_events" in results
 
 
 # ── Innovator ────────────────────────────────────────────────
 
 class TestInnovator:
-    @pytest.mark.asyncio
-    async def test_innovate_writes_highlights(self, store: KnowledgeStore):
+    def test_innovate_writes_highlights(self, store: KnowledgeStore):
         # 预置调研文档
         store.save_research("hot_events", "## 热点\n内容")
         store.save_research("similar_novels", "## 同类小说\n内容")
@@ -142,15 +194,14 @@ class TestInnovator:
             client, model="test-model",
         )
 
-        result = await innovator.innovate(store, brief="剑客故事")
+        result = _run(innovator.innovate(store, brief="剑客故事"))
 
         assert "创新亮点" in result
         # 应写入 research/highlights.md
         assert store.load_research("highlights") == result
         assert "highlights" in store.list_research_topics()
 
-    @pytest.mark.asyncio
-    async def test_innovate_empty_kb_still_runs(self, store: KnowledgeStore):
+    def test_innovate_empty_kb_still_runs(self, store: KnowledgeStore):
         client = FakeClient(responses=["基于 brief 的方向性建议"])
         innovator = Innovator(
             "创新亮点策划师", "Innovator", "创新",
@@ -158,22 +209,22 @@ class TestInnovator:
         )
 
         # KB 为空，但应正常执行
-        result = await innovator.innovate(store, brief="故事")
+        result = _run(innovator.innovate(store, brief="故事"))
         assert result != ""
         assert store.load_research("highlights") == result
 
-    @pytest.mark.asyncio
-    async def test_innovate_llm_failure_writes_error_placeholder(self, store: KnowledgeStore):
+    def test_innovate_llm_failure_writes_error_placeholder(self, store: KnowledgeStore):
         store.save_research("hot_events", "内容")
 
-        failing_client = MagicMock()
-        failing_client.chat = AsyncMock(side_effect=RuntimeError("LLM 挂了"))
+        failing_client = FailingClient(RuntimeError("LLM 挂了"))
         innovator = Innovator(
             "创新亮点策划师", "Innovator", "创新",
             failing_client, model="test-model",
         )
 
-        # 不应抛异常，应返回错误占位符
-        result = await innovator.innovate(store, brief="故事")
+        # M8 修复：不抛异常，返回错误占位符，但不落盘到 KB（避免污染下游 context）
+        result = _run(innovator.innovate(store, brief="故事"))
         assert "失败" in result
-        assert store.load_research("highlights") == result
+        # KB 不应被错误占位符污染
+        assert store.load_research("highlights") == ""
+        assert "highlights" not in store.list_research_topics()

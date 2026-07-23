@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from typing import Any
@@ -199,6 +200,29 @@ class LocalInferenceClient:
         self._loaded = True
         logger.info("✅ Local inference client ready on %s", self.device)
 
+    def _generate_sync(self, text: str, gen_kwargs: dict) -> str:
+        """同步生成（阻塞调用，应通过 asyncio.to_thread 调用）。"""
+        inputs = self.tokenizer(text, return_tensors="pt")
+        # 多 GPU 时放到第一个设备
+        device = self.model.device if hasattr(self.model, 'device') else (self.device if self.device != "cpu" else "cpu")
+        if isinstance(device, str) and device != "cpu":
+            inputs = inputs.to(device)
+        elif not isinstance(device, str):
+            # device_map="auto" 返回 dict-like，取第一个
+            try:
+                first_device = next(iter(self.model.hf_device_map.values()))
+                inputs = inputs.to(first_device)
+            except (AttributeError, StopIteration):
+                inputs = inputs.to("cuda:0")
+
+        with torch.no_grad():
+            output_ids = self.model.generate(**inputs, **gen_kwargs)
+
+        # 只取新生成的部分
+        input_len = inputs["input_ids"].shape[1]
+        generated_ids = output_ids[0][input_len:]
+        return self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+
     async def chat(
         self,
         messages: list[dict[str, str]],
@@ -208,7 +232,12 @@ class LocalInferenceClient:
         stream: bool = False,
         system: str | None = None,
     ) -> str:
-        """与 OllamaClient 兼容的 chat 接口."""
+        """与 OllamaClient 兼容的 chat 接口.
+
+        P1 修复：tokenization / model.generate / decode 都是同步阻塞调用（秒级~分钟级），
+        直接在 async 函数里执行会冻结整个事件循环，使批次并行退化为串行。
+        通过 asyncio.to_thread offload 到线程池，让其他协程继续推进。
+        """
         # 组装消息
         payload_messages = []
         if system:
@@ -238,28 +267,8 @@ class LocalInferenceClient:
                    "do_sample": True,
             })
 
-        inputs = self.tokenizer(text, return_tensors="pt")
-        # 多 GPU 时放到第一个设备
-        device = self.model.device if hasattr(self.model, 'device') else (self.device if self.device != "cpu" else "cpu")
-        if isinstance(device, str) and device != "cpu":
-            inputs = inputs.to(device)
-        elif not isinstance(device, str):
-            # device_map="auto" 返回 dict-like，取第一个
-            try:
-                first_device = next(iter(self.model.hf_device_map.values()))
-                inputs = inputs.to(first_device)
-            except (AttributeError, StopIteration):
-                inputs = inputs.to("cuda:0")
-
-        with torch.no_grad():
-            output_ids = self.model.generate(**inputs, **gen_kwargs)
-
-        # 只取新生成的部分
-        input_len = inputs["input_ids"].shape[1]
-        generated_ids = output_ids[0][input_len:]
-        response = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
-
-        return response
+        # P1 修复：把阻塞的模型推理 offload 到线程，不冻结事件循环
+        return await asyncio.to_thread(self._generate_sync, text, gen_kwargs)
 
     async def generate(
         self,

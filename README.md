@@ -112,62 +112,8 @@ python -m api
 ### 多 Job 并发 + REST API
 `jobs.py` 的 `JobRunner` 管理多个并发小说任务，每任务独立 `knowledge/` + `output/`，`asyncio.Semaphore` 限并发，index 持久化到 `jobs/index.json`。`api.py`（FastAPI）暴露 REST 端点供外部驱动。
 
-<<<<<<< HEAD
 ### 完稿交付物
 `phase_complete` 末尾产出：润色版 `_final.md`、清洗版 `_final.txt`（去 markdown、带扉页和章节标题）、≤500 字内容简介 `_synopsis.txt`、封面 brief JSON + 纯英文提示词。
-=======
-快速新建一本：
-
-```bash
-python3 series/破镜之后/tools/new_variant.py --title "离婚第五年，前夫跪在雨里求我回头" --mode modern --ending no_forgiveness --wound "误会背叛+生死时刻缺席" --years 5
-```
-
-### 《不被定义她的主场》
-
-女本位长篇批量创作系列工程：
-
-```text
-series/不被定义她的主场/
-├── knowledge/   # 女本位系列圣经、不被定义模式、人物原型、女性关系、冲突发动机
-├── templates/   # 单本长篇种子、人物卡、章节、大纲、封面 brief 模板
-├── variants/    # 每本书/每个主题的独立项目
-└── tools/new_variant.py
-```
-
-定位：全方位聚焦女主，以女性成长、女性力量、女性自主为叙事主线；女主不被时代、身份、年龄、职业、婚恋、天赋或失败定义，最终建立自己的主场。
-
-快速新建一本：
-
-```bash
-python3 series/不被定义她的主场/tools/new_variant.py --title "女钳工她不认命" --mode era --definition D01+D04 --core "六零年代女钳工打破性别工种偏见，成为大国工匠"
-```
-
----
-
-## 🧩 Skills / Tools
-
-### 书籍封面生成
-
-Story Studio 已集成本地 ComfyUI 封面生成能力：
-
-```text
-skills/book-cover-generation/SKILL.md
-skills/book-cover-generation/README_INTEGRATION.md
-skills/ancient-social-drama/SKILL.md
-skills/ancient-tragic-romance/SKILL.md
-skills/mind-bending-shorts/SKILL.md   # 脑洞类短故事避坑指南（番茄作家课堂第29期）
-tools/book_cover_comfy.py
-templates/comfy/book_cover_flux2_klein_with_chinese_text_api.json
-```
-
-用途：小说/短篇完稿后，智能体根据正文、大纲、世界观和角色设定设计封面视觉提示词，调用 ComfyUI 生成无字底图，并用 Pillow 自定义节点自动叠加真实中文书名、作者和副标题。
-
-快速调用：
-
-```bash
-python3 tools/book_cover_comfy.py --title "关河裂" --subtitle "北朝双雄史诗" --author "Arthur 著" --novel-file "../关河裂_总结.txt"
-```
->>>>>>> 526e7f056fba7e56e975e5f2b965e16e7e911b5c
 
 ---
 

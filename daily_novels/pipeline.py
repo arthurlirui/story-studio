@@ -13,7 +13,7 @@ logger = logging.getLogger("daily-pipeline")
 API_BASE = os.environ.get("LLM_API_BASE", "https://llmapi.pcl.ac.cn/v1")
 API_KEY = os.environ.get("LLM_API_KEY", "")
 MODEL = os.environ.get("LLM_MODEL", "DeepSeek-V4-Pro")
-BOCHA_API_KEY = os.environ.get("BOCHA_API_KEY", "")
+BOCHA_API_KEY = os.environ.get("BOCHA_API_KEY", "") or os.environ.get("WEB_SEARCH_API_KEY", "")
 
 WORKSPACE = Path(__file__).parent
 OUTPUT_DIR = WORKSPACE / "output"
@@ -61,7 +61,9 @@ async def search_hot_topics() -> list[dict]:
         return []
 
     # 延迟导入避免循环依赖（daily_novels 可能被独立运行）
-    sys.path.insert(0, str(WORKSPACE.parent))
+    # M6 修复：sys.path insert 幂等，避免多次调用时重复插入
+    if str(WORKSPACE.parent) not in sys.path:
+        sys.path.insert(0, str(WORKSPACE.parent))
     from agents.web_search import BochaSearchProvider
 
     provider = BochaSearchProvider(BOCHA_API_KEY)

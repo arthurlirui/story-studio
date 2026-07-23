@@ -39,6 +39,9 @@ class RunState:
     updated_at: float = field(default_factory=time.time)
     # 成本聚合：{model: {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int, "calls": int}}
     cost: dict[str, dict[str, int]] = field(default_factory=dict)
+    # 进度日志：记录每个关键进度事件（章节完成、阶段完成等），供断电恢复审计。
+    # 每条格式: {"ts": str, "phase": str, "chapter": int|None, "batch_id": str|None, "event": str, "detail": str}
+    progress_log: list[dict] = field(default_factory=list)
 
     def touch(self) -> None:
         self.updated_at = time.time()
@@ -46,13 +49,12 @@ class RunState:
     def save(self, path: Path) -> None:
         """原子写到 run_state.json。"""
         self.touch()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(
+        # M3-dup 修复：复用 knowledge._atomic_write_text，避免逻辑重复
+        from agents.knowledge import _atomic_write_text
+        _atomic_write_text(
+            path,
             json.dumps(asdict(self), ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
-        os.replace(tmp, path)
 
     @classmethod
     def load(cls, path: Path) -> "RunState | None":
@@ -71,12 +73,19 @@ class RunState:
                 created_at=float(data.get("created_at", time.time())),
                 updated_at=float(data.get("updated_at", time.time())),
                 cost=data.get("cost", {}) or {},
+                progress_log=data.get("progress_log", []) or [],
             )
         except (json.JSONDecodeError, ValueError, TypeError):
             return None
 
     def merge_into_orchestrator(self, orch: Any) -> None:
-        """把持久化状态合并到 orchestrator 实例（仅在字段为默认值时覆盖）。"""
+        """把持久化状态合并到 orchestrator 实例（仅在字段为默认值时覆盖）。
+
+        时序约束：此方法仅在 orchestrator 刚构造完（phase 等字段仍是默认值）
+        时调用，StoryOrchestrator.__init__ 末尾即按此约定执行。若在构造后
+        手动改过 phase/project_name 等字段再调用本方法，恢复行为会被
+        「字段非默认值则跳过」的守卫吞掉，导致状态不加载。
+        """
         if self.project_name and not orch.project_name:
             orch.project_name = self.project_name
         if self.phase and orch.phase == PHASE_IDLE:
@@ -106,6 +115,16 @@ class RunState:
         bucket["completion_tokens"] += int(usage.get("completion_tokens", 0))
         bucket["total_tokens"] += int(usage.get("total_tokens", 0))
         bucket["calls"] += 1
+
+    def append_progress(self, path: Path, event: dict) -> None:
+        """追加一条进度日志并持久化到 run_state.json。
+
+        事件格式: {"ts": ..., "phase": ..., "chapter": ..., "batch_id": ..., "event": ..., "detail": ...}
+        自动补充时间戳。用于断电恢复时审计崩溃点。
+        """
+        event = {**event, "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        self.progress_log.append(event)
+        self.save(path)
 
     def cost_summary(self) -> dict[str, Any]:
         """返回可读的成本摘要。"""
