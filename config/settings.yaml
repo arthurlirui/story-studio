@@ -1,4 +1,4 @@
-# Story Studio Settings
+# Story Studio Settings — 十日长安
 
 # ── 后端选择: "llm" / "ollama" ──
 backend: "llm"
@@ -14,15 +14,21 @@ light_model: "DeepSeek-V4-Pro"
 # ── Ollama (本地, 未使用时忽略) ──
 ollama_host: "http://localhost:11434"
 
-# ── 旧 Volcengine 配置 (已弃用, 保留兼容) ──
-volcengine_base_url: "https://ark.cn-beijing.volces.com/api/coding/v3"
-volcengine_api_key: ""
+# ── 路径 ──
+knowledge_dir: "series/轮回怪谈/variants/01_十日长安/knowledge"
+series_knowledge_dir: "series/轮回怪谈/knowledge"
+output_dir: "series/轮回怪谈/variants/01_十日长安/output"
 
-# ── 路径 (留空使用代码默认值: ../knowledge, ../output) ──
-knowledge_dir: ""
-series_knowledge_dir: "series/千行百业/knowledge"
-output_dir: ""
+# ── 创作参数 ──
+max_rounds: 3
+scene_writers: 3
+max_context_chars: 60000
+batch_size: 3
+merge_gate_rounds: 1
 
-# ── 其他 ──
-max_rounds: 20
-scene_writers: 3  # 并行写作的编剧数量
+# ── 网络搜索 ──
+web_search_provider: "doubao"
+web_search_api_key: ""
+web_search_endpoint: ""
+research_enabled: false
+research_max_topics: 4

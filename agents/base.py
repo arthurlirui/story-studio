@@ -36,6 +36,8 @@ class Agent(ABC):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self._conversation_history: list[dict[str, str]] = []
+        # 最近一次 LLM 调用的 token 用量（从 client.last_usage 拷贝），供上层核算成本
+        self.last_usage: dict[str, int] | None = None
 
     @property
     @abstractmethod
@@ -43,8 +45,12 @@ class Agent(ABC):
         """Agent 的系统提示词."""
         ...
 
-    async def think(self, prompt: str, context: str = "") -> str:
-        """思考并回复。"""
+    async def think(self, prompt: str, context: str = "", model: str | None = None) -> str:
+        """思考并回复。
+
+        model: 可选模型名覆盖，用于把 meta 任务（标题/简介/封面 brief 等）
+            路由到更便宜的 light_model。None 时用 agent 默认 self.model。
+        """
         system = self.system_prompt
         if context:
             system = f"{system}\n\n## 当前已知信息\n\n{context}"
@@ -58,11 +64,15 @@ class Agent(ABC):
 
         response = await self.client.chat(
             messages=messages,
-            model=self.model,
+            model=model or self.model,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             system=system,
         )
+
+        # 拷贝 client 最近一次 usage 到 self，供上层聚合成本（client 可能是共享实例）
+        client_usage = getattr(self.client, "last_usage", None)
+        self.last_usage = dict(client_usage) if client_usage else None
 
         self._conversation_history.append({"role": "user", "content": prompt})
         self._conversation_history.append({"role": "assistant", "content": response})

@@ -1,0 +1,50 @@
+# Story Studio Settings — 示例配置
+#
+# 复制为 settings.yaml 后填入真实密钥。settings.yaml 已在 .gitignore 中，
+# 不会进版本库。
+#
+# 密钥也可通过环境变量 LLM_API_KEY 注入（settings.yaml 的 llm_api_key 为空时
+# 自动 fallback 到该 env）。
+
+# ── 后端选择: "llm" / "ollama" ──
+backend: "llm"
+
+# ── LLM API (PCL OpenAI-compatible, llmapi.pcl.ac.cn) ──
+llm_base_url: "https://llmapi.pcl.ac.cn/v1"
+llm_api_key: ""  # 留空则从环境变量 LLM_API_KEY 读取
+
+# ── 模型 ──
+main_model: "DeepSeek-V4-Pro"
+light_model: "DeepSeek-V4-Pro"  # meta 任务（标题/简介/封面 brief）用此模型
+
+# ── Ollama (本地, 未使用时忽略) ──
+ollama_host: "http://localhost:11434"
+
+# ── 路径 (留空使用代码默认值: ../knowledge, ../output) ──
+knowledge_dir: ""
+series_knowledge_dir: "series/千行百业/knowledge"  # 共享世界观（只读）
+series_research_dir: "series/千行百业/research"      # 共享调研知识库（只读）
+output_dir: ""
+
+# ── 创作参数 ──
+max_rounds: 3            # 每章自动修订上限（REVISE/REJECT 回灌重写的最大轮数）
+scene_writers: 3         # 并行写作的编剧数量
+max_context_chars: 60000 # build_context 总字符预算
+batch_size: 3            # 批次并行写作的默认章节数
+merge_gate_rounds: 1    # 融合门冲突章定向重写的轮数上限
+
+# ── Per-agent 模型路由（可选）──
+# 缺键回退 role 默认：main tier (scene_writer/showrunner/world_architect/
+# character_designer) → main_model；light tier (editor/continuity_keeper/
+# title_designer/hooker/climax_designer/literary_advisor) → light_model。
+# 显式指定可覆盖默认：
+# agent_models:
+#   editor: "deepseek-r1-32b"
+#   showrunner: "deepseek-v4-pro"
+
+# ── 网络搜索 + 私有知识库（调研阶段）──
+web_search_provider: "doubao"   # "doubao" | "bocha" | "mock"
+web_search_api_key: ""          # 留空从环境变量 WEB_SEARCH_API_KEY 读取
+web_search_endpoint: ""         # 留空用 provider 默认 endpoint
+research_enabled: true          # 关闭则跳过 research/innovate 任务
+research_max_topics: 4          # 检索主题数（热点/重要事件/同类小说/创作手法）

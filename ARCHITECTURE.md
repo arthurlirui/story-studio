@@ -1,20 +1,20 @@
 # 🎭 Story Studio — 小说剧本创作智能体团队
 
-> 本地模型驱动的多 Agent 协作创作系统  
-> Roles by Archy · Architecture by Managy · Implementation by Cody
+> LLM API 驱动的多 Agent 协作创作系统  
+> 10 位 Agent · 自动修订质量门 · 可恢复运行 · 多 Job 并发 · REST API
 
 ---
 
 ## 1. 概述
 
-**Story Studio** 是一个由多个 AI Agent 组成的智能创作团队，每个成员扮演小说/剧本创作链条中的一个专业角色。所有 Agent 通过本地 Ollama 模型推理，数据完全本地化。
+**Story Studio** 是一个由 10 个 AI Agent 组成的智能创作团队，每个成员扮演小说/剧本创作链条中的一个专业角色。Agent 通过 OpenAI 兼容的 LLM API（默认 PCL LLM API）推理，支持 per-agent 模型路由、自动修订质量门、运行状态持久化、多 Job 并发和 REST API。
 
 ### 核心能力
 
 ```
-用户需求 → 团队讨论 → 大纲构建 → 章节写作 → 多轮修订 → 成品输出
-                 ↕                  ↕
-           世界观/角色数据库    连续性检查
+用户需求 → 团队讨论 → 大纲构建 → 章节写作（自动修订） → 终审 → 成品交付
+                 ↕                  ↕                        ↕
+           世界观/角色数据库    连续性检查 + 章节摘要      清洗版 TXT / 简介 / 封面
 ```
 
 ---
@@ -61,9 +61,23 @@
           │ • 叙事结构建议             │
           │ • 风格指导                 │
           │ • 技巧推荐                 │
-          │ • 读者心理分析             │
+          │ • 章节摘要生成（≤200 字）   │
           └──────────────────────────┘
+
+  网文特化设计师（Phase 3 介入）：
+  ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+  │ 🏷️ 标题设计师    │ │ 🪝 钩子设计师    │ │ 🔥 爽点设计师    │
+  │ Title Designer  │ │ Hooker          │ │ Climax Designer │
+  │ • 书名/章节标题  │ │ • 章节钩子/悬念  │ │ • 爽点节奏/高潮  │
+  └─────────────────┘ └─────────────────┘ └─────────────────┘
 ```
+
+### 模型路由
+
+按角色分两层（可在 `settings.yaml` 的 `agent_models` 里逐个覆盖）：
+
+- **main tier**（走 `main_model`）：scene_writer / showrunner / world_architect / character_designer
+- **light tier**（走 `light_model`）：editor / continuity_keeper / literary_advisor / title_designer / hooker / climax_designer
 
 ### 2.1 🎬 总策划 (Showrunner)
 
@@ -159,9 +173,40 @@
 
 **输出**: 连续性检查报告 + 待修正清单
 
----
+### 2.8 🏷️ 标题设计师 (Title Designer)
 
-## 3. 创作流程
+**角色定义**: 为作品和各章节设计吸引眼球、契合内容的标题。**Phase 3 介入**。
+
+**职责**:
+- 设计全书书名（含副标题、备选方案）
+- 为每章设计章节标题（回扣内容、留悬念）
+- 兼顾网文平台的"标题党"特性与文学性
+
+**输出**: 书名候选 + 章节标题列表
+
+### 2.9 🪝 钩子设计师 (Hooker)
+
+**角色定义**: 设计每章开篇钩子和结尾悬念。**Phase 3 介入**。
+
+**职责**:
+- 章首钩子：3 行内抓住读者
+- 章末悬念：留 cliffhanger 推动追更
+- 与爽点设计师协同控制节奏
+
+**输出**: 钩子建议（嵌入章节写作 prompt）
+
+### 2.10 🔥 爽点设计师 (Climax Designer)
+
+**角色定义**: 设计爽点节奏与高潮分布，网文特化角色。**Phase 3 介入**。
+
+**职责**:
+- 规划全书爽点曲线（章 1 小爽、章 5 中爽、章 10 大爽…）
+- 为每章标注爽点类型（打脸 / 装逼 / 逆袭 / 顿悟）
+- 与钩子设计师协同，避免爽点疲劳
+
+**输出**: 爽点节奏表（嵌入大纲）
+
+---
 
 ### 3.1 标准工作流
 
@@ -186,56 +231,92 @@ Phase 3: 大纲
 ─────────────
   Showrunner + 各 Agent → 章节大纲
     ↓
+  Title Designer  → 书名候选
+  Hooker          → 钩子节奏建议
+  Climax Designer → 爽点节奏表
+    ↓
   Literary Advisor → 结构建议
     ↓
   Showrunner → 确定大纲
 
-Phase 4: 写作
-─────────────
-  Scene Writer → 逐章写作
-    ↓
-  Editor → 润色
-    ↓
-  Continuity Keeper → 一致性检查
-    ↓
-  Literary Advisor → 文学评估
-    ↓
-  Showrunner → 评审通过 → 下一章
-                ↓ 不通过 → 退回修订
+Phase 4: 写作（自动修订循环，max_rounds=3）
+─────────────────────────────────────────
+  for round in range(max_rounds):
+    Scene Writer → 写/重写章节
+      ↓
+    Editor → 润色
+      ↓
+    Continuity Keeper → 一致性检查（哨兵守卫，失败跳过）
+      ↓
+    Showrunner → 评审 → 解析 PASS / REVISE / REJECT
+      ↓
+    若 PASS: 保存章节 + 生成章节摘要（literary_advisor）→ 下一章
+    若 REVISE/REJECT: 回灌评审意见重写
+  耗尽轮次: 仍交付但标 ⚠️ 警告头
 
-Phase 5: 完稿
-─────────────
+  并行模式 (phase_writing_parallel):
+    asyncio.gather 多章并行，每章专属 editor/continuity/showrunner 实例
+    异常隔离：单章失败不杀整批
+
+Phase 5: 完稿（终审质量门）
+──────────────────────────
   Full Editor pass → 整体润色
   Final Continuity check → 最终一致性
-  Showrunner → 终审
-    ↓
-  输出成品
+  Showrunner → 终审（最多 max_rounds 轮 final-edit）
+    ↓ 非PASS → 循环修订
+    ↓ 仍非PASS → 头部插 ⚠️ 警告但**仍交付**
+  交付物：
+    • final_clean.txt  — 清洗版正文（去 AI 痕迹）
+    • {project}_synopsis.txt  — ≤500 字内容简介
+    • covers/cover_brief.json — 封面设计 brief
+    • covers/cover_prompt.txt — 封面英文提示词（dry-run 模式）
 ```
 
-### 3.2 交互模式
+### 3.2 交互接口
 
-用户可以通过 CLI 在多个层面干预：
+用户可通过三种方式驱动系统：
+
+**REPL（`python main.py`）**
 
 ```
-# 宏观控制
-/mode [大纲/写作/修订]     — 切换工作模式
-/outline [章节号]          — 查看/修改大纲
-/focus [角色/情节/对话]    — 指定关注点
+/new "<需求>"         — 开始新项目
+/next                 — 推进下一阶段（从盘推断 phase）
+/write [章号]          — 写作章节
+/review [章号]         — 审阅章节
+/revise <章号> <指令>  — 指定修改方向后重写
+/chat <agent> <消息>   — 直接与某个 Agent 对话
+/agents               — 列出所有 Agent
+/debate <主题>         — 启动团队讨论
+/knowledge            — 查看知识库状态
+/world /chars /outline /continuity  — 查看对应知识
+/status               — 系统状态（含 cost 摘要）
+/jobs                 — 列出后台 Job
+/help /exit /quit     — 帮助 / 退出
 
-# 评审干预
-/review [章节号]           — 审阅指定章节
-/revise [章节号] [指令]    — 指定修改方向
-/approve [章节号]          — 通过当前章节
+直接输入文字 = 发送给总策划
+```
 
-# 知识管理
-/knowledge world           — 查看世界观
-/knowledge characters      — 查看角色
-/knowledge timeline        — 查看时间线
+**CLI 一次性命令**
 
-# 团队控制
-/agent [角色名] [指令]     — 直接与某个 Agent 对话
-/debate [主题]             — 启动 Agent 间讨论
-/status                    — 查看团队状态
+```
+python main.py --new "<需求>"     # 跑完策划阶段
+python main.py --status           # 查看状态
+python main.py --submit "<需求>"  # 提交后台 Job
+python main.py --jobs             # 列出 Job
+python main.py --job <id>         # 查看 Job 详情
+python main.py --job-cancel <id>  # 取消 Job
+```
+
+**REST API（`uvicorn api:app` 或 `python -m api`）**
+
+```
+POST   /novels                  — 提交新小说 Job
+GET    /novels                  — 列出所有 Job
+GET    /novels/{id}             — 查看 Job 状态/进度
+GET    /novels/{id}/chapters/{n} — 读取某章正文
+POST   /novels/{id}/revise      — 触发修订
+DELETE /novels/{id}             — 取消 Job
+GET    /health                  — 健康检查
 ```
 
 ---
@@ -263,7 +344,10 @@ knowledge/
     │   ├── chapter_002.md
     │   └── ...
     ├── revisions/          # 修订记录
-    └── continuity_log.md   # 连续性日志
+    ├── reviews/            # 章节评审记录 (chapter_NNN_review.json)
+    ├── summaries/          # 章节摘要 (chapter_NNN.md，≤200 字)
+    ├── continuity_log.md   # 连续性日志
+    └── run_state.json      # 运行状态持久化（见 §6）
 ```
 
 ### 4.2 角色档案格式
@@ -340,31 +424,85 @@ knowledge/
 
 | 层 | 技术 | 用途 |
 |-----|------|------|
-| **推理引擎** | Ollama | 本地模型服务 |
-| **模型** | Qwen 3.6-35B (主推理) / Qwen 2.5-7B (轻量任务) | Agent 推理 |
-| **编排层** | Python asyncio | Agent 协作调度 |
-| **知识库** | Markdown 文件系统 | 结构化知识存储 |
-| **输出** | Markdown → 可导出 EPUB/PDF | 成品格式 |
+| **推理引擎** | LLM API（OpenAI 兼容，默认 PCL LLM API `llmapi.pcl.ac.cn`） | Agent 推理后端 |
+| **模型** | per-agent 路由：`main_model` / `light_model` 两档（可在 `agent_models` 逐个覆盖） | 主力 / 轻量任务分流 |
+| **HTTP 客户端** | httpx.AsyncClient（连接池复用） | API 调用 |
+| **编排层** | Python asyncio + `asyncio.gather`（并行写作） | Agent 协作调度 |
+| **知识库** | Markdown / JSON 文件系统（原子写） | 结构化知识存储 |
+| **Job 调度** | `JobRunner` + `asyncio.Semaphore` | 多并发小说任务 |
+| **REST API** | FastAPI + Uvicorn | 外部驱动接口 |
+| **输出** | 清洗版 TXT + 简介 + 封面 brief | 成品交付 |
 
 ---
 
-## 6. 本地化与隐私
+## 6. 运行状态与持久化
 
-- 所有推理在本地完成，**零数据外泄**
-- 知识库使用纯文本 Markdown，可版本控制 (Git)
-- 创作进度和设定完全由用户掌控
-- 无需联网（除初始安装模型外）
+### 6.1 RunState
+
+`{knowledge_dir}/run_state.json` 持久化以下字段，使崩溃后可恢复：
+
+```json
+{
+  "job_id": "...",
+  "project_name": "...",
+  "phase": "writing",
+  "current_chapter": 5,
+  "total_chapters": 20,
+  "created_at": ...,
+  "updated_at": ...,
+  "cost": {
+    "DeepSeek-V4-Pro": {"prompt": 12345, "completion": 6789, "total": 19134, "calls": 42},
+    "Qwen-...": {...}
+  }
+}
+```
+
+- `StoryOrchestrator.__init__` 末尾读盘合并到 `self`
+- 每次 phase 转换 + 每章写完都 `_save_state()`
+- `conversation_log` 不持久化（体积太大），仅 phase 进度 + cost
+- `/next` 在 `phase=="idle"` 时调用 `_infer_phase_from_disk()`，按 `final.md` → chapters → outline → world/character 顺序推断
+
+### 6.2 RunCost
+
+每次 `agent.think` 把 `client.last_usage`（prompt/completion/total tokens）拷到 `agent.last_usage`，`_save_state` 按 model 分桶聚合到 `RunState.cost`。`get_status()` 返回 cost 摘要，Job progress 暴露累计 token。
+
+### 6.3 章节摘要与上下文压缩
+
+每章 PASS 后 `literary_advisor`（light_model）生成 ≤200 字摘要存 `story/summaries/chapter_NNN.md`。`build_context` 优先用摘要替代首段 200 字，超出 `max_context_chars`（默认 60000）按章节号倒序裁剪最旧摘要；outline 截断到 8000 字。长篇不退化的关键机制。
 
 ---
 
-## 7. 扩展方向
+## 7. Job 模型与并发
 
-- [ ] **Agent 讨论/辩论模式**: 多 Agent 就情节分歧进行讨论，Showrunner 裁决
+`jobs.py` 的 `JobRunner` 管理多并发小说任务：
+
+- 每个 Job 在 `{base_dir}/jobs/{job_id}/` 下独立 `knowledge/` + `output/` 目录
+- `series_knowledge_dir` 跨 Job 共享只读（系列设定复用）
+- `asyncio.Semaphore(max_concurrent)` 限并发（默认 2）
+- Job index 持久化到 `{base_dir}/jobs/index.json`，进程重启可恢复列表
+- 状态机：`queued → running → succeeded / failed / cancelled`
+
+---
+
+## 8. 隐私与密钥
+
+- 推理经外部 LLM API 完成，**数据会上送 API 服务端**——不再宣传"零数据外泄"
+- 密钥不进源码：`config/settings.yaml` 已 `.gitignore`，示例见 `config/settings.example.yaml`
+- `load_config` 在 `llm_api_key` 为空时回退 `LLM_API_KEY` 环境变量
+- 历史仓库里曾出现过密钥，**需在 LLM 服务后台自行轮换**（git 历史不重写）
+- 知识库仍为纯文本 Markdown，可版本控制 (Git)
+
+---
+
+## 9. 扩展方向
+
+- [x] **Agent 讨论/辩论模式**: 多 Agent 就情节分歧进行讨论，Showrunner 裁决（`/debate`）
 - [ ] **分镜脚本生成**: 支持剧本格式（剧本/分镜/对白表）
 - [ ] **人物关系图可视化**: 自动生成角色关系网络图
 - [ ] **阅读时长估算**: 根据字数估算各章节阅读时间
 - [ ] **多语言创作**: 支持中英文及翻译
-- [ ] **Web 界面**: Gradio/Streamlit 前端
+- [x] **Web 界面**: FastAPI REST API（`api.py`）；前端待接
+- [ ] **ComfyUI 真实渲染**: 当前封面为 `--dry-run` 提示词，未来接 ComfyUI 出图
 
 ---
 

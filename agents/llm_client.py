@@ -39,6 +39,24 @@ class LLMClient:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.default_model = default_model
+        # 最近一次 API 调用的 token 用量（None 表示尚未调用或无 usage 字段）。
+        # asyncio 单 loop 下无需锁；跨 loop 共享请用独立 client。
+        self.last_usage: dict[str, int] | None = None
+        # 连接池：复用 httpx.AsyncClient 避免每次 chat 新建 TCP 连接的开销。
+        # lazy 创建（首次 chat 时），aclose() 显式关闭。
+        self._http: httpx.AsyncClient | None = None
+
+    def _get_http(self) -> httpx.AsyncClient:
+        """获取（必要时创建）共享的 httpx.AsyncClient。"""
+        if self._http is None or self._http.is_closed:
+            self._http = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
+        return self._http
+
+    async def aclose(self) -> None:
+        """关闭共享连接池。orchestrator 在 phase_complete 末尾或退出时应调用。"""
+        if self._http is not None and not self._http.is_closed:
+            await self._http.aclose()
+        self._http = None
 
     async def chat(
         self,
@@ -71,15 +89,16 @@ class LLMClient:
         if stream:
             return self._stream_chat(payload, headers)
 
+        consecutive_timeouts = 0
         last_error: Exception | None = None
         for attempt in range(MAX_RETRIES):
             try:
-                async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-                    resp = await client.post(
-                        f"{self.base_url}/chat/completions",
-                        json=payload,
-                        headers=headers,
-                    )
+                client = self._get_http()
+                resp = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                )
 
                 if resp.status_code == 429:
                     delay = min(BASE_DELAY * (2 ** attempt), MAX_DELAY)
@@ -89,14 +108,36 @@ class LLMClient:
 
                 resp.raise_for_status()
                 data = resp.json()
+                # 提取 token 用量（若 API 返回 usage 字段）
+                usage = data.get("usage") if isinstance(data, dict) else None
+                if usage and isinstance(usage, dict):
+                    self.last_usage = {
+                        "prompt_tokens": int(usage.get("prompt_tokens", 0)),
+                        "completion_tokens": int(usage.get("completion_tokens", 0)),
+                        "total_tokens": int(usage.get("total_tokens", 0)),
+                    }
+                else:
+                    self.last_usage = None
                 return self._extract_content(data)
 
             except httpx.TimeoutException:
-                # 超时：将 max_tokens 减半后重试（下限 512，避免无限缩小）
-                new_max = max(payload["max_tokens"] // 2, 512)
-                logger.warning("Timeout (attempt %d/%d), reducing max_tokens %d→%d",
-                               attempt + 1, MAX_RETRIES, payload["max_tokens"], new_max)
-                payload["max_tokens"] = new_max
+                # 超时处理：先用原 max_tokens 重试 1 次；连续第 2 次超时才减半（下限 512）。
+                # 旧实现每次超时都减半，重试 N 次会崩到 512，产出截断章节。
+                consecutive_timeouts += 1
+                if consecutive_timeouts >= 2:
+                    new_max = max(payload["max_tokens"] // 2, 512)
+                    logger.warning(
+                        "Timeout (attempt %d/%d, %d consecutive), reducing max_tokens %d→%d",
+                        attempt + 1, MAX_RETRIES, consecutive_timeouts,
+                        payload["max_tokens"], new_max,
+                    )
+                    payload["max_tokens"] = new_max
+                    consecutive_timeouts = 0  # 减半后重置计数
+                else:
+                    logger.warning(
+                        "Timeout (attempt %d/%d, %d consecutive), retrying with same max_tokens=%d",
+                        attempt + 1, MAX_RETRIES, consecutive_timeouts, payload["max_tokens"],
+                    )
                 continue
 
             except httpx.HTTPStatusError as e:
@@ -126,13 +167,13 @@ class LLMClient:
 
         for attempt in range(MAX_RETRIES):
             try:
-                async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-                    async with client.stream(
-                        "POST",
-                        f"{self.base_url}/chat/completions",
-                        json=payload,
-                        headers=headers,
-                    ) as resp:
+                client = self._get_http()
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                ) as resp:
                         if resp.status_code == 429:
                             delay = min(BASE_DELAY * (2 ** attempt), MAX_DELAY)
                             logger.warning("Rate limited (429) in stream, retry %.1fs (attempt %d/%d)", delay, attempt + 1, MAX_RETRIES)
@@ -236,10 +277,10 @@ class LLMClient:
             yield token
 
     async def check_health(self) -> bool:
-        """Check if API is healthy."""
+        """Check if API is healthy. 用独立短超时 client，不影响共享连接池。"""
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
+            async with httpx.AsyncClient(timeout=10.0) as hc:
+                resp = await hc.get(
                     f"{self.base_url}/models",
                     headers={"Authorization": f"Bearer {self.api_key}"},
                 )

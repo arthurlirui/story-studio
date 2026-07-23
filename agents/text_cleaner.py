@@ -10,8 +10,22 @@ import re
 
 # 章末标记，如 *——第十八章完——*
 _CHAPTER_END_MARKER = re.compile(r'\*——[^——]+完——\*')
+# 全角方括号章末标记，如 【第一章完】/【完】
+_BRACKET_END_MARKER = re.compile(r'【[^【】]*完】')
 # 图片占位 ![alt](url)
 _IMAGE_PLACEHOLDER = re.compile(r'!\[[^\]]*\]\([^)]*\)')
+# LLM 自检块：以 "## 章节自检" / "## 自检" 起头的子标题区块，
+# 含 `- [x]`/`- [ ]` task list 行或爽点/字数等元信息。整块剥离到
+# 下一个空行后非列表行为止，或文本末尾。
+_SELF_CHECK_HEADER = re.compile(
+    r'^#{2,}\s*(?:章节自检|自检)\s*\n[\s\S]*?(?:\n\n(?!\s*[-*]\s)|\Z)',
+    re.MULTILINE,
+)
+# 单行 task list marker：- [x] / - [ ] / * [x] / * [ ]（独占一行才删，避免误伤正文）
+_TASK_LIST_LINE = re.compile(
+    r'^\s*[-*]\s*\[[ xX]\]\s*[^\n]*\n?',
+    re.MULTILINE,
+)
 # 行首段落编号：1. / 1、 / ①②③ / (1) / （1）
 _PARA_NUMBER = re.compile(
     r'^\s*(?:\d+[\.、]\s*'
@@ -42,31 +56,37 @@ def clean_chapter_body(text: str) -> str:
 
     顺序很重要：
     1. 先去图片占位（避免后续正则误伤其内部 []）；
-    2. 去章末标记 *——XX完——*（必须在去 *斜体* 之前，否则 * 会被斜体正则吃掉）；
-    3. 去 **加粗** / *斜体*（保留内部文字）；
-    4. 去引用前缀、分隔线、子标题、段落编号；
-    5. 最后归一化空行和去尾空白。
+    2. 去章末标记 *——XX完——* 和 【XX完】（必须在去 *斜体* 之前，否则 * 会被斜体正则吃掉）；
+    3. 去 LLM 自检块（## 章节自检）和散落的 task list 行（- [x] ...）；
+    4. 去 **加粗** / *斜体*（保留内部文字）；
+    5. 去引用前缀、分隔线、子标题、段落编号；
+    6. 最后归一化空行和去尾空白。
     """
     if not text:
         return ""
     # 1. 去 ![](...) 图片占位
     text = _IMAGE_PLACEHOLDER.sub('', text)
-    # 2. 去 *——XX章完——* 章末标记（必须在斜体正则之前）
+    # 2. 去章末标记：先 *——XX完——*，再 【XX完】（必须在斜体正则之前）
     text = _CHAPTER_END_MARKER.sub('', text)
-    # 3. 去 **加粗** / *斜体*（保留内部文字，与 fix_tomato_format 一致）
+    text = _BRACKET_END_MARKER.sub('', text)
+    # 3. 去 LLM 自检块（## 章节自检 整块）+ 散落的 task list 行
+    #    必须在 _SUBHEADING 之前，否则 ## 前缀被去后无法定位区块起点
+    text = _SELF_CHECK_HEADER.sub('', text)
+    text = _TASK_LIST_LINE.sub('', text)
+    # 4. 去 **加粗** / *斜体*（保留内部文字，与 fix_tomato_format 一致）
     text = _BOLD.sub(r'\1', text)
     text = _ITALIC.sub(r'\1', text)
-    # 4. 去 > 引用前缀（保留引用内容作为正文）
+    # 5. 去 > 引用前缀（保留引用内容作为正文）
     text = _BLOCKQUOTE.sub('', text)
-    # 5. 去 --- /***/___ 分隔线（独占一行）
+    # 6. 去 --- /***/___ 分隔线（独占一行）
     text = _HRULE.sub('', text)
-    # 6. 去 ## 子标题前缀（保留标题文字作为段落起首）
+    # 7. 去 ## 子标题前缀（保留标题文字作为段落起首）
     text = _SUBHEADING.sub('', text)
-    # 7. 防御性去段落编号：行首 1. / ①②③ / (1) / （1）
+    # 8. 防御性去段落编号：行首 1. / ①②③ / (1) / （1）
     text = _PARA_NUMBER.sub('', text)
-    # 8. 归一化空行：3+ 连续换行 → 2
+    # 9. 归一化空行：3+ 连续换行 → 2
     text = _MULTI_NEWLINE.sub('\n\n', text)
-    # 9. 去每行尾空白
+    # 10. 去每行尾空白
     text = _TRAILING_WS.sub('', text)
     return text.strip()
 
