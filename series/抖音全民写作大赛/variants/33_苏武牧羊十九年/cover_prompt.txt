@@ -1,0 +1,9 @@
+**Midjourney Prompt:**
+Su Wu (Western Han Dynasty) herding sheep alone on a desolate snowy steppe --ar 3:4 --style raw --sref 3000 --sw 20 --v 6.1
+
+**Explanation of style & mood:**
+- Ink wash painting blended with fine brushwork (gongbi) figures
+- Dark, muted palette: deep blues, slate grays, charcoal blacks, stark white snow
+- Cinematic lighting: low key chiaroscuro, distant faint warm light breaking through heavy clouds, long dramatic shadows
+- Epic feeling: vast lonely landscape dwarfing the solitary figure, wind-swept snow, worn Han dynasty robes and tattered official's cap, weathered face, gnarled shepherd's staff with faded tassel, distant silhouettes of mountains
+- Details: frost on beard and fur trim, frozen breath visible in cold air, swirling snow particles, sense of decades of unyielding loyalty
