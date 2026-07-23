@@ -189,8 +189,19 @@ class TaskPlanner:
         return self.plan
 
     def load_plan(self) -> TaskPlan | None:
-        """从盘上加载已有清单（断点续跑）。"""
+        """从盘上加载已有清单（断点续跑）。加载后把 running 任务重置为 pending。
+
+        崩溃时 task 停在 running，next_task 只选 pending → 永久卡死。
+        加载时重置 running → pending，让 run_all 能重新执行。
+        """
         self.plan = TaskPlan.load(self.plan_path)
+        if self.plan:
+            for t in self.plan.tasks:
+                if t.status == TASK_RUNNING:
+                    t.status = TASK_PENDING
+                    t.started_at = None
+                    logger.info("恢复：任务 #%d %s 从 running 重置为 pending", t.id, t.name)
+            self.plan.save(self.plan_path)
         return self.plan
 
     # ── 查询 ────────────────────────────────────────────────────
@@ -316,6 +327,8 @@ class TaskPlanner:
         1. plan.total_chapters（用户显式指定）
         2. orchestrator.total_chapters（outlining 阶段从 outline 解析得到）
         3. 兜底 10（防止 0 章导致空跑）
+
+        断电恢复：用 is_chapter_delivered 跳过已交付章节（有摘要 = 走完 PASS/耗尽流程）。
         """
         plan_total = self.plan.total_chapters
         total = plan_total or self.orch.total_chapters or 10
@@ -325,11 +338,22 @@ class TaskPlanner:
             batch_size = max(1, self.cfg.batch_size)
             ch = 1
             while ch <= total:
+                # 跳过已交付的章节（断电恢复）
+                if self.orch.knowledge.is_chapter_delivered(ch):
+                    logger.info("恢复：第 %d 章已交付，跳过", ch)
+                    ch += 1
+                    continue
                 count = min(batch_size, total - ch + 1)
+                # 裁剪批次尾部已交付的章节
+                while count > 1 and self.orch.knowledge.is_chapter_delivered(ch + count - 1):
+                    count -= 1
                 await self.orch.phase_writing_batch(ch, count)
                 ch += count
         else:
             for ch in range(1, total + 1):
+                if self.orch.knowledge.is_chapter_delivered(ch):
+                    logger.info("恢复：第 %d 章已交付，跳过", ch)
+                    continue
                 await self.orch.phase_writing(ch)
 
         return f"写作完成：{total} 章"

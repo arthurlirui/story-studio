@@ -31,6 +31,7 @@ JOB_RUNNING = "running"
 JOB_SUCCEEDED = "succeeded"
 JOB_FAILED = "failed"
 JOB_CANCELLED = "cancelled"
+JOB_RECOVERABLE = "recoverable"  # 进程重启时 running 且有 task_plan.json，可自动恢复
 
 
 @dataclass
@@ -148,6 +149,25 @@ class JobRunner:
         # 互相覆盖（P0 修复）。
         self._job_locks: dict[str, asyncio.Lock] = {}
         self._load_index()
+        # 自动恢复可恢复的 job（异步启动，不阻塞 __init__）
+        self._auto_recover_jobs()
+
+    def _auto_recover_jobs(self) -> None:
+        """重启后自动恢复标记为 recoverable 的 job。
+
+        这些 job 崩溃前在 running，但有 task_plan.json，可走 load_plan 断点续跑。
+        把状态置回 queued 并启动后台 _run_job（total_chapters=None，从 plan 恢复）。
+        """
+        for jid, job in list(self._jobs.items()):
+            if job.status == JOB_RECOVERABLE:
+                logger.info("自动恢复 job %s (phase=%s)", jid, job.phase)
+                job.status = JOB_QUEUED
+                job.error = None
+                job.touch()
+                self._save_index()
+                # 启动后台恢复任务（total_chapters=None，_run_job 会走 load_plan）
+                task = asyncio.create_task(self._run_job(job, None))
+                self._tasks[jid] = task
 
     # ── Index persistence ──────────────────────────────────────
 
@@ -169,11 +189,17 @@ class JobRunner:
                 jid = item.get("id", "")
                 if not jid:
                     continue
-                # 重启后，原本 running 的 job 标记为 failed（无法恢复协程）
+                # 重启后处理孤儿 running job：有 task_plan.json 则可自动恢复，否则标 failed
                 status = item.get("status", JOB_QUEUED)
                 if status == JOB_RUNNING:
-                    status = JOB_FAILED
-                    item["error"] = item.get("error") or "进程重启，运行中任务中断"
+                    kd = item.get("knowledge_dir", "")
+                    has_plan = bool(kd) and Path(kd, "task_plan.json").exists()
+                    if has_plan:
+                        status = JOB_RECOVERABLE
+                        item["error"] = item.get("error") or "进程重启，可自动恢复"
+                    else:
+                        status = JOB_FAILED
+                        item["error"] = item.get("error") or "进程重启，运行中任务中断"
                 elif status == JOB_QUEUED:
                     # P1 修复：queued 状态的 job（提交后未获信号量或进程刚 submit 就被杀）
                     # 无法恢复协程，标记为 failed。原代码保留 queued 导致永久卡死。
@@ -318,14 +344,22 @@ class JobRunner:
                         orch, orch.knowledge, cfg, orch.worklog,
                         plan_path=Path(job.knowledge_dir) / "task_plan.json",
                     )
-                    # H1 修复：total_chapters 透传（None 时让 orchestrator 从 outline 解析），
-                    # 不再硬编码 `or 10`。TaskPlanner.build_plan 接受 int | None。
-                    planner.build_plan(
-                        brief=job.brief,
-                        total_chapters=total_chapters,  # 可能是 None
-                        write_mode=job.write_mode,
-                        job_id=job.id,
-                    )
+                    # 断电恢复：优先 load_plan（自动重置 stale-running 任务），
+                    # 仅首次运行（无 task_plan.json）才 build_plan。
+                    # 原 build_plan 总是覆盖已有 plan，导致自动恢复不可能。
+                    existing_plan = planner.load_plan()
+                    if existing_plan is None:
+                        planner.build_plan(
+                            brief=job.brief,
+                            total_chapters=total_chapters,  # 可能是 None
+                            write_mode=job.write_mode,
+                            job_id=job.id,
+                        )
+                    else:
+                        logger.info(
+                            "Job %s 恢复运行，加载已有 task_plan (%d tasks)",
+                            job.id, len(existing_plan.tasks),
+                        )
 
                     _on_progress = make_on_progress(
                         job, planner, orch, on_save=self._save_index
