@@ -233,6 +233,7 @@ class StoryOrchestrator:
         # RunState：持久化运行进度 + 成本聚合
         self.job_id: str = new_job_id()
         self.run_cost: dict[str, dict[str, int]] = {}
+        self._progress_log: list[dict] = []  # 进度日志（断电恢复用，从 run_state.json 恢复）
         self._state_path: Path = Path(self.cfg.knowledge_dir) / "run_state.json"
         self._load_state_from_disk()
 
@@ -270,6 +271,9 @@ class StoryOrchestrator:
         state = RunState.load(self._state_path)
         if state:
             state.merge_into_orchestrator(self)
+            # 恢复进度日志（断电恢复审计用）
+            if state.progress_log:
+                self._progress_log = list(state.progress_log)
             logger.info(
                 "从 run_state.json 恢复: job_id=%s phase=%s project=%s chapter=%d/%d",
                 self.job_id, self.phase, self.project_name or "(none)",
@@ -285,11 +289,19 @@ class StoryOrchestrator:
             current_chapter=self.current_chapter,
             total_chapters=self.total_chapters,
             cost=dict(self.run_cost),
+            progress_log=list(self._progress_log),
         )
         try:
             state.save(self._state_path)
         except Exception as e:
             logger.warning("保存 run_state 失败: %s", e)
+
+    def _append_progress(self, event: dict) -> None:
+        """追加进度日志并持久化（断电恢复审计用）。"""
+        self._progress_log.append({
+            **event, "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        })
+        self._save_state()
 
     def _record_usage(self, agent: Any) -> None:
         """从 agent.last_usage 聚合到 run_cost + 持久化。"""
@@ -861,9 +873,16 @@ class StoryOrchestrator:
                     chapter_num, edited, batch_id=batch_id,
                     literary_advisor=literary_advisor,
                 )
+                rounds_desc = f"{round_n + 1} 轮" if round_n > 0 else "1 轮"
+                # 断电恢复：无论串行/批次，章节交付后都持久化游标 + 记录进度日志。
+                # 批次中途崩溃也能恢复到正确章节（原 save_state_on_pass 仅控制旧行为）。
+                self._append_progress({
+                    "phase": PHASE_WRITING, "chapter": chapter_num,
+                    "batch_id": batch_id, "event": "chapter_passed",
+                    "detail": f"{rounds_desc}通过",
+                })
                 if save_state_on_pass:
                     self._save_state()
-                rounds_desc = f"{round_n + 1} 轮" if round_n > 0 else "1 轮"
                 return f"## 第 {chapter_num} 章 ✅ 通过（{rounds_desc}）\n\n{edited}"
             # REVISE / REJECT：进入下一轮重写（REJECT 视为更严重的 REVISE）
 
@@ -874,6 +893,12 @@ class StoryOrchestrator:
             chapter_num, edited, batch_id=batch_id,
             literary_advisor=literary_advisor,
         )
+        # 断电恢复：耗尽交付也记录进度日志 + 持久化游标
+        self._append_progress({
+            "phase": PHASE_WRITING, "chapter": chapter_num,
+            "batch_id": batch_id, "event": "chapter_exhausted",
+            "detail": f"{max_rounds} 轮未 PASS 仍交付",
+        })
         if save_state_on_pass:
             self._save_state()
         return (

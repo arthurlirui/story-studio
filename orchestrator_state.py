@@ -39,6 +39,9 @@ class RunState:
     updated_at: float = field(default_factory=time.time)
     # 成本聚合：{model: {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int, "calls": int}}
     cost: dict[str, dict[str, int]] = field(default_factory=dict)
+    # 进度日志：记录每个关键进度事件（章节完成、阶段完成等），供断电恢复审计。
+    # 每条格式: {"ts": str, "phase": str, "chapter": int|None, "batch_id": str|None, "event": str, "detail": str}
+    progress_log: list[dict] = field(default_factory=list)
 
     def touch(self) -> None:
         self.updated_at = time.time()
@@ -70,6 +73,7 @@ class RunState:
                 created_at=float(data.get("created_at", time.time())),
                 updated_at=float(data.get("updated_at", time.time())),
                 cost=data.get("cost", {}) or {},
+                progress_log=data.get("progress_log", []) or [],
             )
         except (json.JSONDecodeError, ValueError, TypeError):
             return None
@@ -111,6 +115,16 @@ class RunState:
         bucket["completion_tokens"] += int(usage.get("completion_tokens", 0))
         bucket["total_tokens"] += int(usage.get("total_tokens", 0))
         bucket["calls"] += 1
+
+    def append_progress(self, path: Path, event: dict) -> None:
+        """追加一条进度日志并持久化到 run_state.json。
+
+        事件格式: {"ts": ..., "phase": ..., "chapter": ..., "batch_id": ..., "event": ..., "detail": ...}
+        自动补充时间戳。用于断电恢复时审计崩溃点。
+        """
+        event = {**event, "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        self.progress_log.append(event)
+        self.save(path)
 
     def cost_summary(self) -> dict[str, Any]:
         """返回可读的成本摘要。"""

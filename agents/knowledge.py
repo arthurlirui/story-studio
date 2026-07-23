@@ -327,6 +327,15 @@ class KnowledgeStore:
                 nums.append(int(m.group(1)))
         return sorted(nums)
 
+    def is_chapter_delivered(self, chapter_num: int) -> bool:
+        """章节是否已交付（有摘要文件 = 走完了 PASS/耗尽流程）。
+
+        summaries/chapter_NNN.md 只在 _generate_chapter_summary 成功时写入
+        （PASS 或耗尽轮次路径），比检查 chapter_NNN.md 更准确（后者每轮修订都写）。
+        供断点续跑的写作循环跳过已完成章节。
+        """
+        return (self.summaries_dir / f"chapter_{chapter_num:03d}.md").exists()
+
     # ── Research KB (variant + series, read-write variant / read-only series) ──
 
     def _safe_topic(self, topic: str) -> str:
