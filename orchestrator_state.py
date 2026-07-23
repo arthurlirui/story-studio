@@ -75,7 +75,13 @@ class RunState:
             return None
 
     def merge_into_orchestrator(self, orch: Any) -> None:
-        """把持久化状态合并到 orchestrator 实例（仅在字段为默认值时覆盖）。"""
+        """把持久化状态合并到 orchestrator 实例（仅在字段为默认值时覆盖）。
+
+        时序约束：此方法仅在 orchestrator 刚构造完（phase 等字段仍是默认值）
+        时调用，StoryOrchestrator.__init__ 末尾即按此约定执行。若在构造后
+        手动改过 phase/project_name 等字段再调用本方法，恢复行为会被
+        「字段非默认值则跳过」的守卫吞掉，导致状态不加载。
+        """
         if self.project_name and not orch.project_name:
             orch.project_name = self.project_name
         if self.phase and orch.phase == PHASE_IDLE:

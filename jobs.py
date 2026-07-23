@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -138,12 +139,28 @@ class JobRunner:
         self._jobs: dict[str, Job] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._index_path = self.base_dir / "index.json"
+        # _save_index 是同步函数，会被多个并发 job 的 on_progress 回调 +
+        # submit/cancel 从同一事件循环调用。threading.Lock 串行化写，避免
+        # 并发 os.replace 同名 tmp 导致 index.json 撕裂（P0 修复）。
+        self._index_lock = threading.Lock()
+        # per-job 执行锁：确保同一 job 的 _run_job / API run_task / run_all
+        # 不会并发编排同一 knowledge_dir，避免 task_plan.json / run_state.json
+        # 互相覆盖（P0 修复）。
+        self._job_locks: dict[str, asyncio.Lock] = {}
         self._load_index()
 
     # ── Index persistence ──────────────────────────────────────
 
     def _load_index(self) -> None:
-        """从 index.json 恢复已知 job 元数据（不恢复运行中状态）。"""
+        """从 index.json 恢复已知 job 元数据（不恢复运行中状态）。
+
+        重启后处理孤儿目录的策略：
+        - 原本 running 的 job 标记为 failed（无法恢复协程），其 knowledge_dir /
+          output_dir 保留在盘上不自动删除，便于事后检查或断点续跑（TaskPlanner
+          的 task_plan.json + run_state.json 仍在，可重新触发 /run-all 继续）。
+        - 长期运行会积累此类孤儿目录，运维方应定期清理 jobs/ 下 status=failed
+          且不再需要续跑的 job 目录，或迁移到归档存储。
+        """
         if not self._index_path.exists():
             return
         try:
@@ -157,6 +174,11 @@ class JobRunner:
                 if status == JOB_RUNNING:
                     status = JOB_FAILED
                     item["error"] = item.get("error") or "进程重启，运行中任务中断"
+                elif status == JOB_QUEUED:
+                    # P1 修复：queued 状态的 job（提交后未获信号量或进程刚 submit 就被杀）
+                    # 无法恢复协程，标记为 failed。原代码保留 queued 导致永久卡死。
+                    status = JOB_FAILED
+                    item["error"] = item.get("error") or "进程重启，排队中任务未执行"
                 tp = item.get("task_progress")
                 job = Job(
                     id=jid,
@@ -179,14 +201,30 @@ class JobRunner:
             logger.warning("加载 job index 失败: %s", e)
 
     def _save_index(self) -> None:
-        """持久化 job index。"""
+        """持久化 job index。
+
+        用 threading.Lock 串行化并发写，tmp 文件名带唯一后缀避免多协程
+        同时写同一 tmp 互相覆盖（P0 修复）。
+        """
         data = {
             "jobs": [j.to_dict() for j in self._jobs.values()],
             "updated_at": time.time(),
         }
-        tmp = self._index_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, self._index_path)
+        # 唯一 tmp 名：pid + 对象 id + 时间戳纳秒，杜绝并发碰撞
+        tmp = self._index_path.with_suffix(
+            f".tmp.{os.getpid()}.{id(self)}.{time.time_ns()}"
+        )
+        with self._index_lock:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, self._index_path)
+
+    def _get_job_lock(self, job_id: str) -> asyncio.Lock:
+        """获取（或创建）per-job 执行锁。"""
+        lock = self._job_locks.get(job_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._job_locks[job_id] = lock
+        return lock
 
     # ── Public API ─────────────────────────────────────────────
 
@@ -249,62 +287,72 @@ class JobRunner:
         from agents.llm_client import LLMClient
 
         async with self._semaphore:
-            job.status = JOB_RUNNING
-            job.touch()
-            self._save_index()
+            # per-job 锁：防止 API 端点（run_task/run_all）与 _run_job 并发
+            # 编排同一 knowledge_dir（P0 修复）。
+            async with self._get_job_lock(job.id):
+                job.status = JOB_RUNNING
+                job.touch()
+                self._save_index()
 
-            try:
                 # 构造该 job 专属的 cfg（覆盖路径）
                 import copy
                 cfg = copy.deepcopy(self.cfg)
                 cfg.knowledge_dir = job.knowledge_dir
                 cfg.output_dir = job.output_dir
 
-                # 每个 job 独立的 LLM client（独立连接池）
+                # 每个 job 独立的 LLM client（独立连接池）。
+                # 在 finally 中关闭，确保成功/失败/取消任何路径都不泄漏连接池。
                 client = LLMClient(
                     base_url=cfg.llm_base_url,
                     api_key=cfg.llm_api_key,
                     default_model=cfg.main_model,
                 )
+                try:
+                    orch = StoryOrchestrator(cfg, client=client)
+                    if job.project_name:
+                        orch.project_name = job.project_name
 
-                orch = StoryOrchestrator(cfg, client=client)
-                if job.project_name:
-                    orch.project_name = job.project_name
+                    # 用 TaskPlanner 驱动整个 pipeline（数据驱动 7 任务清单，支持断点续跑）
+                    from planner import TaskPlanner
+                    planner = TaskPlanner(
+                        orch, orch.knowledge, cfg, orch.worklog,
+                        plan_path=Path(job.knowledge_dir) / "task_plan.json",
+                    )
+                    # H1 修复：total_chapters 透传（None 时让 orchestrator 从 outline 解析），
+                    # 不再硬编码 `or 10`。TaskPlanner.build_plan 接受 int | None。
+                    planner.build_plan(
+                        brief=job.brief,
+                        total_chapters=total_chapters,  # 可能是 None
+                        write_mode=job.write_mode,
+                        job_id=job.id,
+                    )
 
-                # 用 TaskPlanner 驱动整个 pipeline（数据驱动 7 任务清单，支持断点续跑）
-                from planner import TaskPlanner
-                planner = TaskPlanner(
-                    orch, orch.knowledge, cfg, orch.worklog,
-                    plan_path=Path(job.knowledge_dir) / "task_plan.json",
-                )
-                # H1 修复：total_chapters 透传（None 时让 orchestrator 从 outline 解析），
-                # 不再硬编码 `or 10`。TaskPlanner.build_plan 接受 int | None。
-                planner.build_plan(
-                    brief=job.brief,
-                    total_chapters=total_chapters,  # 可能是 None
-                    write_mode=job.write_mode,
-                    job_id=job.id,
-                )
+                    _on_progress = make_on_progress(
+                        job, planner, orch, on_save=self._save_index
+                    )
 
-                _on_progress = make_on_progress(
-                    job, planner, orch, on_save=self._save_index
-                )
+                    await planner.run_all(on_progress=_on_progress, stop_on_failure=True)
 
-                await planner.run_all(on_progress=_on_progress, stop_on_failure=True)
+                    # H6 修复：run_all 在 stop_on_failure=True 时会吞掉异常，
+                    # 这里通过 summary 判定失败 → raise → 走 except 走 JOB_FAILED
+                    finalize_job_after_run_all(job, planner, orch, fallback_total=0)
+                    self._save_index()
 
-                # H6 修复：run_all 在 stop_on_failure=True 时会吞掉异常，
-                # 这里通过 summary 判定失败 → raise → 走 except 走 JOB_FAILED
-                finalize_job_after_run_all(job, planner, orch, fallback_total=0)
-                self._save_index()
-
-            except asyncio.CancelledError:
-                job.status = JOB_CANCELLED
-                job.touch()
-                self._save_index()
-                raise
-            except Exception as e:
-                logger.exception("Job %s 失败", job.id)
-                job.status = JOB_FAILED
-                job.error = str(e)
-                job.touch()
-                self._save_index()
+                except asyncio.CancelledError:
+                    job.status = JOB_CANCELLED
+                    job.touch()
+                    self._save_index()
+                    raise
+                except Exception as e:
+                    logger.exception("Job %s 失败", job.id)
+                    job.status = JOB_FAILED
+                    job.error = str(e)
+                    job.touch()
+                    self._save_index()
+                finally:
+                    # 无论成功/失败/取消都关闭连接池。
+                    # 注意：phase_complete 成功路径内部已 aclose，这里二次调用是幂等的（有 is_closed 守卫）。
+                    try:
+                        await client.aclose()
+                    except Exception as e:
+                        logger.warning("Job %s 关闭 LLM 连接池失败: %s", job.id, e)

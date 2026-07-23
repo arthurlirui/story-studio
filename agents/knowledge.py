@@ -15,10 +15,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from agents.llm_client import LLM_ERROR_PREFIX as _LLM_ERROR_PREFIX
 
-# 连续性日志的 API 错误哨兵前缀（与 agents/llm_client._ERROR_SENTINEL 一致）
-_LLM_ERROR_PREFIX = "[LLM API error"
+logger = logging.getLogger(__name__)
 
 # C5 修复：调研文档的输出优先级顺序，避免 sorted(glob) 字母序导致 highlights /
 # creation_techniques 抢占预算、把 similar_novels 挤出窗口。
@@ -510,10 +509,26 @@ class KnowledgeStore:
                     chapter_summaries.append(f"Ch {num}: {first_para[:200]}...")
             # 预算裁剪：总长超 max_chars 时从最旧的章节摘要开始丢弃
             if chapter_summaries:
-                total = sum(len(s) for s in chapter_summaries)
-                while total > max_chars and len(chapter_summaries) > 1:
-                    dropped = chapter_summaries.pop(0)  # 最旧
-                    total -= len(dropped)
+                # O(n) 一次扫描：累加前缀和，找到不超过 max_chars 的最大尾部切片。
+                # 旧实现用 while + pop(0)，pop(0) 是 O(n)，整体 O(n²)，
+                # 100+ 章长篇会累积可观开销。
+                prefix = 0
+                prefix_sums = [0]
+                for s in chapter_summaries:
+                    prefix += len(s)
+                    prefix_sums.append(prefix)
+                total = prefix_sums[-1]
+                keep_from = 0
+                if total > max_chars:
+                    # 从尾部保留尽可能多的最新摘要，丢弃最旧的若干条
+                    # 找最小的 keep_from 使 sum(chapter_summaries[keep_from:]) <= max_chars
+                    # 等价于：prefix_sums[-1] - prefix_sums[keep_from] <= max_chars
+                    target = total - max_chars
+                    # 二分找第一个 prefix_sums[k] >= target
+                    import bisect
+                    keep_from = bisect.bisect_left(prefix_sums, target)
+                    if keep_from > 0 and len(chapter_summaries) > 1:
+                        chapter_summaries = chapter_summaries[keep_from:]
                 parts.append("## Completed Chapters\n" + "\n".join(chapter_summaries))
 
         # Continuity log

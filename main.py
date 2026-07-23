@@ -625,6 +625,17 @@ async def main():
             job_id = await runner.submit(brief, project_name=project_name)
             print(f"✅ 已提交后台 Job: {job_id}")
             print(f"   用 `python main.py --job {job_id}` 查看状态，`--job-cancel {job_id}` 取消")
+            # P1 修复：原代码 submit 后直接 return，asyncio.run 关闭事件循环会
+            # 取消刚启动的后台 _run_job 任务，job 永远不会真正执行。
+            # 改为等待后台任务完成（或被取消）后再退出。
+            task = runner._tasks.get(job_id)
+            if task is not None:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    print(f"⏹️ Job {job_id} 已取消")
+                except Exception as e:
+                    print(f"❌ Job {job_id} 失败: {e}")
             return
         elif sys.argv[1] == "--jobs":
             from jobs import JobRunner

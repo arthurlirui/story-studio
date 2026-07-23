@@ -9,6 +9,8 @@ from typing import Any
 
 import httpx
 
+from agents.llm_client import LLM_ERROR_PREFIX
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,7 +65,7 @@ class OllamaClient:
 
         except Exception as e:
             logger.error("Ollama error: %s", e)
-            return f"[LLM API error: Ollama: {e}]"
+            return f"{LLM_ERROR_PREFIX}: Ollama: {e}]"
 
     async def generate(
         self,

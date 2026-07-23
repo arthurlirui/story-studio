@@ -250,3 +250,69 @@ def test_run_task_rejects_running_job(tmp_path: Path, monkeypatch):
         assert resp2.status_code == 409
 
     api._runner = None
+
+
+# ── API key 鉴权测试 ────────────────────────────────────────
+
+
+def _cfg_with_key(tmp_path: Path, api_key: str) -> StudioConfig:
+    return StudioConfig(
+        backend="llm",
+        llm_api_key="fake",
+        api_key=api_key,
+        knowledge_dir=str(tmp_path / "knowledge"),
+        output_dir=str(tmp_path / "output"),
+        scene_writers=1,
+    )
+
+
+def test_api_key_rejects_missing(tmp_path: Path, monkeypatch):
+    """配置了 api_key 时，无 X-API-Key 请求应被 401。"""
+    async def _fake_run_job(self, job, total_chapters):
+        async with self._semaphore:
+            job.status = JOB_SUCCEEDED
+            job.phase = "complete"
+            self._save_index()
+
+    monkeypatch.setattr(JobRunner, "_run_job", _fake_run_job)
+    monkeypatch.setenv("STORY_STUDIO_JOBS_DIR", str(tmp_path / "jobs"))
+    import api
+    api._runner = None
+    monkeypatch.setattr(api, "load_config", lambda: _cfg_with_key(tmp_path, "secret-key"))
+
+    with TestClient(api.app) as client:
+        # /health 始终开放
+        assert client.get("/health").status_code == 200
+        # 受保护端点无 key → 401
+        resp = client.post("/novels", json={"brief": "故事"})
+        assert resp.status_code == 401
+        # 受保护端点 GET 也 401
+        assert client.get("/novels").status_code == 401
+
+    api._runner = None
+
+
+def test_api_key_accepts_correct(tmp_path: Path, monkeypatch):
+    """携带正确 X-API-Key 时请求正常通过。"""
+    async def _fake_run_job(self, job, total_chapters):
+        async with self._semaphore:
+            job.status = JOB_SUCCEEDED
+            job.phase = "complete"
+            self._save_index()
+
+    monkeypatch.setattr(JobRunner, "_run_job", _fake_run_job)
+    monkeypatch.setenv("STORY_STUDIO_JOBS_DIR", str(tmp_path / "jobs"))
+    import api
+    api._runner = None
+    monkeypatch.setattr(api, "load_config", lambda: _cfg_with_key(tmp_path, "secret-key"))
+
+    with TestClient(api.app) as client:
+        headers = {"X-API-Key": "secret-key"}
+        resp = client.post("/novels", json={"brief": "故事"}, headers=headers)
+        assert resp.status_code == 200
+        # 错误 key → 401
+        bad = client.post("/novels", json={"brief": "故事"}, headers={"X-API-Key": "wrong"})
+        assert bad.status_code == 401
+
+    api._runner = None
+

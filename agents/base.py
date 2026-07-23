@@ -8,6 +8,8 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
+from agents.llm_client import LLM_ERROR_PREFIX
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,8 +76,11 @@ class Agent(ABC):
         client_usage = getattr(self.client, "last_usage", None)
         self.last_usage = dict(client_usage) if client_usage else None
 
+        # P1 修复：错误哨兵不存入对话历史，避免下一轮 think 把 "[LLM API error: …]"
+        # 当作 assistant 回复喂回模型，污染后续生成。
         self._conversation_history.append({"role": "user", "content": prompt})
-        self._conversation_history.append({"role": "assistant", "content": response})
+        if not response.startswith(LLM_ERROR_PREFIX):
+            self._conversation_history.append({"role": "assistant", "content": response})
 
         if len(self._conversation_history) > 50:
             self._conversation_history = self._conversation_history[-30:]

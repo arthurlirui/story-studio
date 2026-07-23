@@ -20,7 +20,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 # 确保项目根在 sys.path（api.py 可能被 uvicorn 直接加载）
@@ -52,7 +53,55 @@ def get_runner() -> JobRunner:
     return _runner
 
 
+async def _build_orch_for_job(job):
+    """为指定 job 构造独立的 StoryOrchestrator + LLMClient。
+
+    调用方必须在 finally 中 await client.aclose() 释放连接池，
+    否则会泄漏 httpx.AsyncClient。返回 (orch, client)。
+    """
+    from orchestrator import StoryOrchestrator
+    from agents.llm_client import LLMClient
+    import copy
+
+    runner = get_runner()
+    cfg = copy.deepcopy(runner.cfg)
+    cfg.knowledge_dir = job.knowledge_dir
+    cfg.output_dir = job.output_dir
+    client = LLMClient(
+        base_url=cfg.llm_base_url,
+        api_key=cfg.llm_api_key,
+        default_model=cfg.main_model,
+    )
+    orch = StoryOrchestrator(cfg, client=client)
+    if job.project_name:
+        orch.project_name = job.project_name
+    return orch, client
+
+
 app = FastAPI(title="Story Studio API", version="1.0")
+
+
+@app.middleware("http")
+async def api_key_auth(request: Request, call_next):
+    """X-API-Key 鉴权中间件。
+
+    仅当 cfg.api_key 非空时启用。/health 与 docs 始终开放；其余端点要求
+    请求头 X-API-Key 匹配，否则返回 401。未配置 api_key 时全开放（本地/内网）。
+
+    P1 修复：原代码每请求调 load_config()（读 .env + 解析 YAML + mkdir），
+    高并发下文件系统 syscalls 风暴。改为从已缓存的 JobRunner.cfg 读取。
+    """
+    # 从缓存的 runner 读取 api_key，避免每请求重跑 load_config（P1 修复）
+    expected = get_runner().cfg.api_key
+    if not expected:
+        return await call_next(request)
+    path = request.url.path
+    if path in ("/health", "/", "/docs", "/openapi.json", "/redoc"):
+        return await call_next(request)
+    provided = request.headers.get("X-API-Key", "")
+    if provided != expected:
+        return JSONResponse(status_code=401, content={"detail": "invalid or missing X-API-Key"})
+    return await call_next(request)
 
 
 # ── 请求/响应模型 ────────────────────────────────────────────
@@ -134,28 +183,14 @@ async def revise_chapter(job_id: str, req: NovelRevise):
     if job.status == JOB_RUNNING or job.status == JOB_QUEUED:
         raise HTTPException(status_code=409, detail="job still running, cannot revise")
 
-    # 延迟导入，复用 orchestrator
-    from orchestrator import StoryOrchestrator
-    from agents.llm_client import LLMClient
-    import copy
-
-    cfg = copy.deepcopy(runner.cfg)
-    cfg.knowledge_dir = job.knowledge_dir
-    cfg.output_dir = job.output_dir
-    client = LLMClient(
-        base_url=cfg.llm_base_url,
-        api_key=cfg.llm_api_key,
-        default_model=cfg.main_model,
-    )
-    orch = StoryOrchestrator(cfg, client=client)
-    if job.project_name:
-        orch.project_name = job.project_name
-
+    orch, client = await _build_orch_for_job(job)
     try:
         result = await orch.phase_writing(req.chapter)
         return {"chapter": req.chapter, "result": result[:1000]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await client.aclose()
 
 
 @app.post("/novels/{job_id}/batch")
@@ -171,23 +206,7 @@ async def batch_write(job_id: str, req: BatchWrite):
     if job.status == JOB_RUNNING or job.status == JOB_QUEUED:
         raise HTTPException(status_code=409, detail="job still running, cannot batch write")
 
-    # 延迟导入，复用 orchestrator
-    from orchestrator import StoryOrchestrator
-    from agents.llm_client import LLMClient
-    import copy
-
-    cfg = copy.deepcopy(runner.cfg)
-    cfg.knowledge_dir = job.knowledge_dir
-    cfg.output_dir = job.output_dir
-    client = LLMClient(
-        base_url=cfg.llm_base_url,
-        api_key=cfg.llm_api_key,
-        default_model=cfg.main_model,
-    )
-    orch = StoryOrchestrator(cfg, client=client)
-    if job.project_name:
-        orch.project_name = job.project_name
-
+    orch, client = await _build_orch_for_job(job)
     try:
         result = await orch.phase_writing_batch(req.start_chapter, req.count)
         return {
@@ -197,6 +216,8 @@ async def batch_write(job_id: str, req: BatchWrite):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await client.aclose()
 
 
 @app.delete("/novels/{job_id}")
@@ -211,131 +232,135 @@ async def cancel_novel(job_id: str):
 
 # ── 任务清单端点（TaskPlanner）─────────────────────────────────
 
-def _build_planner_for_job(job_id: str):
-    """为指定 job 构造 TaskPlanner（复用其 knowledge_dir / cfg）。"""
+async def _build_planner_for_job(job_id: str):
+    """为指定 job 构造 TaskPlanner（复用其 knowledge_dir / cfg）。
+
+    返回 (planner, orch, job, client)。调用方必须在 finally 中
+    await client.aclose() 释放连接池。
+    """
     runner = get_runner()
     job = runner.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
-    from orchestrator import StoryOrchestrator
-    from agents.llm_client import LLMClient
     from planner import TaskPlanner
-    import copy
 
-    cfg = copy.deepcopy(runner.cfg)
-    cfg.knowledge_dir = job.knowledge_dir
-    cfg.output_dir = job.output_dir
-    client = LLMClient(
-        base_url=cfg.llm_base_url,
-        api_key=cfg.llm_api_key,
-        default_model=cfg.main_model,
-    )
-    orch = StoryOrchestrator(cfg, client=client)
-    if job.project_name:
-        orch.project_name = job.project_name
+    orch, client = await _build_orch_for_job(job)
     planner = TaskPlanner(
-        orch, orch.knowledge, cfg, orch.worklog,
+        orch, orch.knowledge, orch.cfg, orch.worklog,
         plan_path=Path(job.knowledge_dir) / "task_plan.json",
     )
-    return planner, orch, job
+    return planner, orch, job, client
 
 
 @app.get("/novels/{job_id}/tasks")
 async def get_tasks(job_id: str):
     """返回该 job 的任务清单。"""
-    planner, _orch, job = _build_planner_for_job(job_id)
-    plan = planner.load_plan()
-    if plan is None:
-        return {"job_id": job_id, "plan": None, "message": "尚未生成任务清单"}
-    return {
-        "job_id": job_id,
-        "plan": plan.to_dict(),
-        "summary": planner.summary(),
-    }
+    planner, _orch, job, client = await _build_planner_for_job(job_id)
+    try:
+        plan = planner.load_plan()
+        if plan is None:
+            return {"job_id": job_id, "plan": None, "message": "尚未生成任务清单"}
+        return {
+            "job_id": job_id,
+            "plan": plan.to_dict(),
+            "summary": planner.summary(),
+        }
+    finally:
+        await client.aclose()
 
 
 @app.post("/novels/{job_id}/tasks/{task_n}/run")
 async def run_task(job_id: str, task_n: int):
     """执行该 job 的第 N 个任务（1-based）。"""
-    planner, _orch, job = _build_planner_for_job(job_id)
-    if job.status == JOB_RUNNING or job.status == JOB_QUEUED:
-        raise HTTPException(status_code=409, detail="job still running")
-    plan = planner.load_plan()
-    if plan is None:
-        raise HTTPException(status_code=404, detail="task plan not found, POST /novels first")
-    task = next((t for t in plan.tasks if t.id == task_n), None)
-    if task is None:
-        raise HTTPException(status_code=404, detail=f"task #{task_n} not found")
-    if task.status in ("done", "running"):
-        planner.reset_task(task_n)
-        task = next((t for t in planner.plan.tasks if t.id == task_n), task)
-    # H4 修复：单任务执行也更新 job 状态，便于前端轮询
+    planner, _orch, job, client = await _build_planner_for_job(job_id)
     runner = get_runner()
-    job.status = JOB_RUNNING
-    job.phase = task.phase
-    runner._save_index()
-    try:
-        result = await planner.run_task(task)
-        job.status = JOB_SUCCEEDED
-        job.touch()
-        runner._save_index()
-        return {"task_id": task_n, "status": task.status, "result": result[:1000]}
-    except Exception as e:
-        job.status = JOB_FAILED
-        job.error = str(e)
-        job.touch()
-        runner._save_index()
-        raise HTTPException(status_code=500, detail=str(e))
+    # per-job 锁：防止与 _run_job / run_all 并发编排同一 knowledge_dir（P0 修复）
+    async with runner._get_job_lock(job_id):
+        try:
+            if job.status == JOB_RUNNING or job.status == JOB_QUEUED:
+                raise HTTPException(status_code=409, detail="job still running")
+            plan = planner.load_plan()
+            if plan is None:
+                raise HTTPException(status_code=404, detail="task plan not found, POST /novels first")
+            task = next((t for t in plan.tasks if t.id == task_n), None)
+            if task is None:
+                raise HTTPException(status_code=404, detail=f"task #{task_n} not found")
+            if task.status in ("done", "running"):
+                planner.reset_task(task_n)
+                task = next((t for t in planner.plan.tasks if t.id == task_n), task)
+            # H4 修复：单任务执行也更新 job 状态，便于前端轮询
+            job.status = JOB_RUNNING
+            job.phase = task.phase
+            runner._save_index()
+            try:
+                result = await planner.run_task(task)
+                job.status = JOB_SUCCEEDED
+                job.touch()
+                runner._save_index()
+                return {"task_id": task_n, "status": task.status, "result": result[:1000]}
+            except Exception as e:
+                job.status = JOB_FAILED
+                job.error = str(e)
+                job.touch()
+                runner._save_index()
+                raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            await client.aclose()
 
 
 @app.post("/novels/{job_id}/run-all")
 async def run_all_tasks(job_id: str):
     """按序执行该 job 的所有未完成任务。"""
-    planner, orch, job = _build_planner_for_job(job_id)
-    if job.status == JOB_RUNNING or job.status == JOB_QUEUED:
-        raise HTTPException(status_code=409, detail="job still running")
-    if planner.load_plan() is None:
-        raise HTTPException(status_code=404, detail="task plan not found")
+    planner, orch, job, client = await _build_planner_for_job(job_id)
     runner = get_runner()
-    # H4 修复：显式标记 running，run_all 期间 on_progress 持续更新 phase/progress
-    job.status = JOB_RUNNING
-    job.touch()
-    runner._save_index()
-    _on_progress = make_on_progress(
-        job, planner, orch, on_save=runner._save_index
-    )
-    try:
-        await planner.run_all(on_progress=_on_progress, stop_on_failure=True)
-    except Exception as e:
-        job.status = JOB_FAILED
-        job.error = str(e)
-        job.touch()
-        runner._save_index()
-        raise HTTPException(status_code=500, detail=str(e))
-    # H6 修复：根据 planner.summary 判定 job 状态（run_all 吞了异常，需显式检查）
-    s = planner.summary()
-    if s.get("failed", 0) > 0:
-        # 部分失败：标记 job failed 但返回 200 + partial_failure（便于前端展示哪些 task 失败）
-        job.status = JOB_FAILED
-        failed_tasks = [
-            f"#{t.id}({t.phase})" for t in planner.plan.tasks if t.status == "failed"
-        ]
-        job.error = f"任务失败 {s['failed']} 个：{', '.join(failed_tasks)}"
-        job.touch()
-        runner._save_index()
-        return {
-            "job_id": job_id,
-            "status": "partial_failure",
-            "summary": s,
-            "failed_tasks": [
-                {"id": t.id, "phase": t.phase, "error": t.error}
-                for t in planner.plan.tasks if t.status == "failed"
-            ],
-        }
-    # 全部成功：填充 result
-    finalize_job_after_run_all(job, planner, orch, fallback_total=0)
-    runner._save_index()
-    return {"job_id": job_id, "status": "succeeded", "summary": s}
+    # per-job 锁：防止与 _run_job / run_task 并发编排同一 knowledge_dir（P0 修复）
+    async with runner._get_job_lock(job_id):
+        try:
+            if job.status == JOB_RUNNING or job.status == JOB_QUEUED:
+                raise HTTPException(status_code=409, detail="job still running")
+            if planner.load_plan() is None:
+                raise HTTPException(status_code=404, detail="task plan not found")
+            # H4 修复：显式标记 running，run_all 期间 on_progress 持续更新 phase/progress
+            job.status = JOB_RUNNING
+            job.touch()
+            runner._save_index()
+            _on_progress = make_on_progress(
+                job, planner, orch, on_save=runner._save_index
+            )
+            try:
+                await planner.run_all(on_progress=_on_progress, stop_on_failure=True)
+            except Exception as e:
+                job.status = JOB_FAILED
+                job.error = str(e)
+                job.touch()
+                runner._save_index()
+                raise HTTPException(status_code=500, detail=str(e))
+            # H6 修复：根据 planner.summary 判定 job 状态（run_all 吞了异常，需显式检查）
+            s = planner.summary()
+            if s.get("failed", 0) > 0:
+                # 部分失败：标记 job failed 但返回 200 + partial_failure（便于前端展示哪些 task 失败）
+                job.status = JOB_FAILED
+                failed_tasks = [
+                    f"#{t.id}({t.phase})" for t in planner.plan.tasks if t.status == "failed"
+                ]
+                job.error = f"任务失败 {s['failed']} 个：{', '.join(failed_tasks)}"
+                job.touch()
+                runner._save_index()
+                return {
+                    "job_id": job_id,
+                    "status": "partial_failure",
+                    "summary": s,
+                    "failed_tasks": [
+                        {"id": t.id, "phase": t.phase, "error": t.error}
+                        for t in planner.plan.tasks if t.status == "failed"
+                    ],
+                }
+            # 全部成功：填充 result
+            finalize_job_after_run_all(job, planner, orch, fallback_total=0)
+            runner._save_index()
+            return {"job_id": job_id, "status": "succeeded", "summary": s}
+        finally:
+            await client.aclose()
 
 
 @app.get("/health")

@@ -27,6 +27,7 @@ from agents import (
     get_search_provider,
 )
 from agents.llm_client import client as llm_client
+from agents.llm_client import LLM_ERROR_PREFIX
 from agents.text_cleaner import clean_chapter_body, strip_existing_title
 from orchestrator_state import (
     RunState,
@@ -66,19 +67,22 @@ def _truncate_at_sentence(text: str, max_len: int) -> str:
     return cut
 
 
-# 中文数字 → 阿拉伯数字（支持 1-99，与 _num_to_cn 互逆）
+# 中文数字 → 阿拉伯数字（支持 1-999，与 _num_to_cn 互逆）
 _CN_DIGITS = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
               "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 
 
 def _cn_to_int(s: str) -> int | None:
-    """中文数字转 int。支持 '一'..'九十九'，以及纯阿拉伯数字。返回 None 表示无法解析。"""
+    """中文数字转 int。支持 '一'..'九百九十九'，以及纯阿拉伯数字。返回 None 表示无法解析。"""
     s = s.strip()
     if not s:
         return None
     # 纯阿拉伯数字
     if s.isdigit():
         return int(s)
+    # 含「百」优先处理（避免被下面的「十」字型误匹配，如「百十」）
+    if "百" in s:
+        return _cn_to_int_with_bai(s)
     # 单字：一/十/...九
     if s in _CN_DIGITS:
         return _CN_DIGITS[s]
@@ -92,6 +96,33 @@ def _cn_to_int(s: str) -> int | None:
     if len(s) == 3 and s[1] == "十":
         return _CN_DIGITS.get(s[0], 0) * 10 + _CN_DIGITS.get(s[2], 0)
     return None
+
+
+def _cn_to_int_with_bai(s: str) -> int | None:
+    """解析含「百」的中文数字（1-999）。结构：[X]百[零Y | Y十[Z] | Y]。"""
+    bai_idx = s.find("百")
+    head = s[:bai_idx]
+    # 百位前的数字（缺省为 1，如「百」=100、「一百」=100）；显式「二」..「九」也允许
+    if head:
+        if head not in _CN_DIGITS or head == "十":
+            return None
+        hundreds = _CN_DIGITS[head]
+    else:
+        hundreds = 1
+    tail = s[bai_idx + 1:]
+    if not tail:
+        return hundreds * 100
+    # 余部可能以「零」开头（如「一百零一」），去掉零后再解析个位
+    if tail.startswith("零"):
+        tail = tail[1:]
+        if len(tail) != 1 or tail not in _CN_DIGITS:
+            return None
+        return hundreds * 100 + _CN_DIGITS[tail]
+    # 其余余部走通用解析（十/X十/十Y/X十Y 等）
+    tail_val = _cn_to_int(tail)
+    if tail_val is None or tail_val >= 100:
+        return None
+    return hundreds * 100 + tail_val
 
 
 class StoryOrchestrator:
@@ -665,6 +696,7 @@ class StoryOrchestrator:
         batch_id: str | None = None,
         neighbor_briefs: str = "",
         chapter_brief: dict | None = None,
+        literary_advisor: "LiteraryAdvisor | None" = None,
     ) -> str:
         """单章写作的完整修订流水线（串行/并行共享）。
 
@@ -680,6 +712,8 @@ class StoryOrchestrator:
             save_continuity: 是否写 continuity_log.md（并行批次内跳过，避免并发覆盖）。
             save_state_on_pass: 是否在 PASS 时 _save_state（并行批次统一在批次末尾保存）。
             batch_id: 并行批次 ID（写工作记录用）。
+            literary_advisor: 可选的专属文学顾问实例（并行批次传入每章独立实例，
+                避免 _conversation_history 并发串扰；P1 修复）。None 时复用 self.literary_advisor。
             neighbor_briefs: 相邻章节的协调简报摘要（并行批次注入，串行为空）。
             chapter_brief: 本章协调简报 dict（并行批次注入，串行为 None）。
         """
@@ -733,7 +767,7 @@ class StoryOrchestrator:
             chapter_text = await writer.think(scene_prompt, context)
             duration_ms = int((time.time() - t0) * 1000)
             self._record_usage(writer)
-            if not chapter_text or chapter_text.startswith("[LLM API error"):
+            if not chapter_text or chapter_text.startswith(LLM_ERROR_PREFIX):
                 await self.worklog.append(
                     phase=PHASE_WRITING, chapter=chapter_num, batch_id=batch_id,
                     agent=writer.name, role=writer.role, action="write",
@@ -761,7 +795,7 @@ class StoryOrchestrator:
             )
             duration_ms = int((time.time() - t0) * 1000)
             self._record_usage(editor)
-            if not edited or edited.startswith("[LLM API error"):
+            if not edited or edited.startswith(LLM_ERROR_PREFIX):
                 edited = chapter_text  # 润色失败时退回原稿
             self._log("editor", edited[:200])
             self.knowledge.save_chapter(chapter_num, edited, "editor")
@@ -783,7 +817,7 @@ class StoryOrchestrator:
             duration_ms = int((time.time() - t0) * 1000)
             self._record_usage(continuity_keeper)
             self._log("continuity_keeper", continuity)
-            if save_continuity and continuity and not continuity.startswith("[LLM API error"):
+            if save_continuity and continuity and not continuity.startswith(LLM_ERROR_PREFIX):
                 self.knowledge.save_continuity_log(continuity)
             await self.worklog.append(
                 phase=PHASE_WRITING, chapter=chapter_num, batch_id=batch_id,
@@ -823,7 +857,10 @@ class StoryOrchestrator:
             if verdict == "PASS":
                 self.knowledge.save_chapter(chapter_num, edited, "editor_pass")
                 # 生成章节摘要（≤200 字）供后续章节 build_context 用，替代首段截断
-                await self._generate_chapter_summary(chapter_num, edited, batch_id=batch_id)
+                await self._generate_chapter_summary(
+                    chapter_num, edited, batch_id=batch_id,
+                    literary_advisor=literary_advisor,
+                )
                 if save_state_on_pass:
                     self._save_state()
                 rounds_desc = f"{round_n + 1} 轮" if round_n > 0 else "1 轮"
@@ -833,7 +870,10 @@ class StoryOrchestrator:
         # 耗尽轮次仍非 PASS：交付 edited 但标警告
         self.knowledge.save_chapter(chapter_num, edited, "editor_revise_exhausted")
         # 耗尽轮次也生成摘要（交付版本仍有参考价值）
-        await self._generate_chapter_summary(chapter_num, edited, batch_id=batch_id)
+        await self._generate_chapter_summary(
+            chapter_num, edited, batch_id=batch_id,
+            literary_advisor=literary_advisor,
+        )
         if save_state_on_pass:
             self._save_state()
         return (
@@ -843,11 +883,18 @@ class StoryOrchestrator:
 
     async def _generate_chapter_summary(
         self, chapter_num: int, chapter_text: str, *, batch_id: str | None = None,
+        literary_advisor: "LiteraryAdvisor | None" = None,
     ) -> None:
         """用 literary_advisor（light_model）为章节生成 ≤200 字摘要并保存。
 
         失败不影响主流程（摘要缺失时 build_context 回退首段）。
+
+        Args:
+            literary_advisor: 可选的专属实例。并行批次下各章传入独立实例，
+                避免共享 self.literary_advisor 的 _conversation_history 并发串扰
+                及 last_usage 被兄弟协程覆盖（P1 修复）。None 时复用 self.literary_advisor（串行路径）。
         """
+        advisor = literary_advisor or self.literary_advisor
         try:
             excerpt = chapter_text[:3000]
             prompt = (
@@ -855,17 +902,17 @@ class StoryOrchestrator:
                 f"要求：纯文本，无标题，无 markdown，无引导语；聚焦关键情节、人物动作、状态变化。\n\n"
                 f"## 第 {chapter_num} 章正文（节选）\n{excerpt}"
             )
-            summary = await self.literary_advisor.think(prompt)
-            self._record_usage(self.literary_advisor)
+            summary = await advisor.think(prompt)
+            self._record_usage(advisor)
             # 截到 200 字以防 LLM 超长
-            if summary and not summary.startswith("[LLM API error"):
+            if summary and not summary.startswith(LLM_ERROR_PREFIX):
                 self.knowledge.save_chapter_summary(chapter_num, summary[:200])
                 self._log("literary_advisor", f"Summary Ch{chapter_num}: {summary[:80]}...")
                 await self.worklog.append(
                     phase=PHASE_WRITING, chapter=chapter_num, batch_id=batch_id,
-                    agent=self.literary_advisor.name, role=self.literary_advisor.role,
-                    action="summary", model=getattr(self.literary_advisor, "model", ""),
-                    usage=getattr(self.literary_advisor, "last_usage", None) or {},
+                    agent=advisor.name, role=advisor.role,
+                    action="summary", model=getattr(advisor, "model", ""),
+                    usage=getattr(advisor, "last_usage", None) or {},
                     excerpt=summary[:200],
                 )
         except Exception as e:
@@ -965,6 +1012,12 @@ class StoryOrchestrator:
                     self.client, model=self._agent_model("showrunner", "main"),
                     temperature=0.6,
                 ),
+                # P1 修复：每章独立 literary_advisor，避免并发 _conversation_history 串扰
+                literary_advisor=LiteraryAdvisor(
+                    "文学顾问", "Literary Advisor", "文学技巧建议",
+                    self.client, model=self._agent_model("literary_advisor", "light"),
+                    temperature=0.7,
+                ),
                 chapter_num=ch_num,
                 context=context,
                 chapter_outline=ch_outline,
@@ -1003,6 +1056,9 @@ class StoryOrchestrator:
 
         # ── Step C: 融合门（硬门）──────────────────────────────
         delivered = list(chapter_results.keys())
+        # P1 修复：预初始化 output_parts，避免所有章都异常时（delivered 为空）
+        # 下面 return 的 join(output_parts) 抛 NameError，丢失 error_parts 摘要。
+        output_parts: list[str] = []
         if delivered:
             conflicts = await self.coordinator.merge_gate(delivered, batch_id=batch_id)
             if conflicts:
@@ -1010,7 +1066,6 @@ class StoryOrchestrator:
                 for gate_round in range(gate_rounds):
                     if not conflicts:
                         break
-                    rewrite_notes = []
                     for ch_num, issues in conflicts.items():
                         # 定向重写：复用串行单章流程（已带 max_rounds 修订），
                         # build_context 此时能看到同批次其他章的最新摘要
@@ -1021,7 +1076,6 @@ class StoryOrchestrator:
                             f"\n\n---\n\n## 🔁 融合门重写（轮 {gate_round + 1}）\n"
                             f"冲突原因: {'; '.join(issues)}"
                         )
-                        rewrite_notes.append(f"第 {ch_num} 章已重写")
                     # 再跑一次融合门看是否仍有冲突
                     conflicts = await self.coordinator.merge_gate(delivered, batch_id=batch_id)
                     if conflicts:
@@ -1038,7 +1092,9 @@ class StoryOrchestrator:
 
             # 重新组装输出（按章节号排序）+ 异常条目放最后
             output_parts = [chapter_results[ch] for ch in sorted(chapter_results)]
-            output_parts.extend(error_parts)
+
+        # error_parts 无论是否有 delivered 章节都要附上（P1 修复：全失败时也返回错误摘要）
+        output_parts.extend(error_parts)
 
         return "\n\n---\n\n".join(output_parts)
 
@@ -1063,93 +1119,100 @@ class StoryOrchestrator:
         final_review = ""
         final_verdict = "REVISE"
         rounds_taken = 0
+        # P1 修复：评审意见不污染 full_text（原代码把评审意见拼进 full_text，
+        # 导致 _finalize_delivery 拿到的是"评审意见+正文"而非纯正文，生成的
+        # 简介/封面 brief 基于错误文本）。用 edit_base_text 承载带意见的编辑输入。
+        edit_base_text = full_text
 
-        for round_n in range(max_rounds):
-            rounds_taken = round_n + 1
-            # Final edit pass
-            await self._rate_limit_pause()
-            final_edit = await self.editor.think(
-                "请对整个作品做最后一轮全文润色。关注整体文风统一。\n\n" + full_text,
-                context,
-            )
-            self._record_usage(self.editor)
-            if not final_edit or final_edit.startswith("[LLM API error"):
-                final_edit = full_text  # 润色失败退回原稿
-            self._log("editor", f"Final edit complete (round {round_n})")
-
-            # Final continuity
-            await self._rate_limit_pause()
-            final_cont = await self.continuity_keeper.think(
-                "请对全文做最终连续性检查。\n\n" + final_edit[:5000],
-                context,
-            )
-            self._record_usage(self.continuity_keeper)
-            self._log("continuity_keeper", final_cont)
-
-            # Final approval — 可附加项目专属评审标准
-            await self._rate_limit_pause()
-            review_prompt = (
-                "请对整部作品进行终审，确认交付。\n\n"
-                "## 输出格式（必须严格遵守）\n"
-                "第一行必须是 `VERDICT: PASS` 或 `VERDICT: REVISE` 或 `VERDICT: REJECT`，"
-                "之后空一行再写评审意见。\n\n"
-            )
-            if review_criteria:
-                review_prompt += f"## 评审标准\n{review_criteria}\n\n"
-            review_prompt += f"## 作品正文（节选）\n{final_edit[:5000]}"
-            final_review = await self.showrunner.think(review_prompt, context)
-            self._record_usage(self.showrunner)
-            self._log("showrunner", f"Final review (round {round_n}): {final_review[:200]}")
-
-            final_verdict = self._parse_review_verdict(final_review)
-            if final_verdict == "PASS":
-                break
-            # 非 PASS：若有下一轮，把评审意见带入下一轮 final_edit
-            if round_n < max_rounds - 1:
-                full_text = (
-                    f"上一轮终审未过（{final_verdict}），评审意见：\n{final_review}\n\n"
-                    f"---\n\n请基于以上意见重润色：\n\n{full_text}"
+        try:
+            for round_n in range(max_rounds):
+                rounds_taken = round_n + 1
+                # Final edit pass
+                await self._rate_limit_pause()
+                final_edit = await self.editor.think(
+                    "请对整个作品做最后一轮全文润色。关注整体文风统一。\n\n" + edit_base_text,
+                    context,
                 )
+                self._record_usage(self.editor)
+                if not final_edit or final_edit.startswith(LLM_ERROR_PREFIX):
+                    final_edit = full_text  # 润色失败退回原稿
+                self._log("editor", f"Final edit complete (round {round_n})")
 
-        # Save final markdown (润色版，保留 markdown)
-        out_dir = Path(self.cfg.output_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        project = self.project_name or "story"
-        output_path = out_dir / f"{project}_final.md"
+                # Final continuity
+                await self._rate_limit_pause()
+                final_cont = await self.continuity_keeper.think(
+                    "请对全文做最终连续性检查。\n\n" + final_edit[:5000],
+                    context,
+                )
+                self._record_usage(self.continuity_keeper)
+                self._log("continuity_keeper", final_cont)
 
-        if final_verdict != "PASS":
-            # 耗尽轮次仍非 PASS：头部插警告但仍交付
-            warning = (
-                f"> ⚠️ 终审未通过（耗尽 {rounds_taken} 轮，最终 VERDICT: {final_verdict}）\n"
-                f"> {final_review[:300]}\n\n---\n\n"
+                # Final approval — 可附加项目专属评审标准
+                await self._rate_limit_pause()
+                review_prompt = (
+                    "请对整部作品进行终审，确认交付。\n\n"
+                    "## 输出格式（必须严格遵守）\n"
+                    "第一行必须是 `VERDICT: PASS` 或 `VERDICT: REVISE` 或 `VERDICT: REJECT`，"
+                    "之后空一行再写评审意见。\n\n"
+                )
+                if review_criteria:
+                    review_prompt += f"## 评审标准\n{review_criteria}\n\n"
+                review_prompt += f"## 作品正文（节选）\n{final_edit[:5000]}"
+                final_review = await self.showrunner.think(review_prompt, context)
+                self._record_usage(self.showrunner)
+                self._log("showrunner", f"Final review (round {round_n}): {final_review[:200]}")
+
+                final_verdict = self._parse_review_verdict(final_review)
+                if final_verdict == "PASS":
+                    break
+                # 非 PASS：若有下一轮，把评审意见带入下一轮 editor 的输入
+                if round_n < max_rounds - 1:
+                    edit_base_text = (
+                        f"上一轮终审未过（{final_verdict}），评审意见：\n{final_review}\n\n"
+                        f"---\n\n请基于以上意见重润色：\n\n{full_text}"
+                    )
+
+            # Save final markdown (润色版，保留 markdown)
+            out_dir = Path(self.cfg.output_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            project = self.project_name or "story"
+            output_path = out_dir / f"{project}_final.md"
+
+            if final_verdict != "PASS":
+                # 耗尽轮次仍非 PASS：头部插警告但仍交付
+                warning = (
+                    f"> ⚠️ 终审未通过（耗尽 {rounds_taken} 轮，最终 VERDICT: {final_verdict}）\n"
+                    f"> {final_review[:300]}\n\n---\n\n"
+                )
+                output_path.write_text(warning + final_edit, encoding="utf-8")
+            else:
+                output_path.write_text(final_edit, encoding="utf-8")
+
+            self._save_state()
+
+            # ── 新增交付物：清洗版 TXT + 内容简介 + 封面提示词 ──
+            delivery = await self._finalize_delivery(full_text)
+
+            verdict_emoji = "✅" if final_verdict == "PASS" else "⚠️"
+            summary = (
+                f"## 终审 {verdict_emoji}（{rounds_taken} 轮，VERDICT: {final_verdict}）\n{final_review}\n\n"
+                f"## 输出\n- 润色版 MD: {output_path}\n"
+                f"{delivery}"
             )
-            output_path.write_text(warning + final_edit, encoding="utf-8")
-        else:
-            output_path.write_text(final_edit, encoding="utf-8")
-
-        self._save_state()
-
-        # ── 新增交付物：清洗版 TXT + 内容简介 + 封面提示词 ──
-        delivery = await self._finalize_delivery(full_text)
-
-        verdict_emoji = "✅" if final_verdict == "PASS" else "⚠️"
-        summary = (
-            f"## 终审 {verdict_emoji}（{rounds_taken} 轮，VERDICT: {final_verdict}）\n{final_review}\n\n"
-            f"## 输出\n- 润色版 MD: {output_path}\n"
-            f"{delivery}"
-        )
-        # 关闭共享连接池（项目完结，不再有 LLM / 搜索调用）
-        if hasattr(self.client, "aclose"):
-            try:
-                await self.client.aclose()
-            except Exception as e:
-                logger.warning("关闭 LLM 连接池失败: %s", e)
-        if hasattr(self.web_search, "aclose"):
-            try:
-                await self.web_search.aclose()
-            except Exception as e:
-                logger.warning("关闭 web_search 连接池失败: %s", e)
-        return summary
+            return summary
+        finally:
+            # P1 修复：无论 phase_complete 成功或异常都关闭连接池，避免泄漏。
+            # 注意：jobs._run_job 的 finally 也会调 client.aclose（幂等，有 is_closed 守卫）。
+            if hasattr(self.client, "aclose"):
+                try:
+                    await self.client.aclose()
+                except Exception as e:
+                    logger.warning("关闭 LLM 连接池失败: %s", e)
+            if hasattr(self.web_search, "aclose"):
+                try:
+                    await self.web_search.aclose()
+                except Exception as e:
+                    logger.warning("关闭 web_search 连接池失败: %s", e)
 
     async def _finalize_delivery(self, full_text: str) -> str:
         """完稿末尾的三件交付物：清洗版 TXT、内容简介、封面提示词.
@@ -1395,7 +1458,7 @@ class StoryOrchestrator:
         response: str, project: str, full_text: str
     ) -> dict | None:
         """从 LLM 响应中提取 cover brief JSON。失败返回 None。"""
-        if not response or response.startswith("[LLM API error"):
+        if not response or response.startswith(LLM_ERROR_PREFIX):
             return None
         # 去掉可能的 ```json 代码块标记
         cleaned = re.sub(r'^```(?:json)?\s*', '', response.strip(), flags=re.MULTILINE)
@@ -1580,7 +1643,7 @@ class StoryOrchestrator:
 
     @staticmethod
     def _num_to_cn(n: int) -> str:
-        """阿拉伯数字(1-99)转中文数字。"""
+        """阿拉伯数字(1-999)转中文数字。"""
         cn_nums = "零一二三四五六七八九"
         if n <= 0:
             return str(n)
@@ -1588,8 +1651,20 @@ class StoryOrchestrator:
             return cn_nums[n]
         if n < 20:
             return "十" + ("" if n == 10 else cn_nums[n - 10])
-        tens, ones = divmod(n, 10)
-        return cn_nums[tens] + "十" + ("" if ones == 0 else cn_nums[ones])
+        if n < 100:
+            tens, ones = divmod(n, 10)
+            return cn_nums[tens] + "十" + ("" if ones == 0 else cn_nums[ones])
+        if n < 1000:
+            hundreds, rest = divmod(n, 100)
+            # 始终输出百位系数（含「一」），保持与 _cn_to_int 互逆且无歧义
+            head = cn_nums[hundreds] + "百"
+            if rest == 0:
+                return head
+            if rest < 10:
+                return head + "零" + cn_nums[rest]
+            # 10-99 余部用递归
+            return head + StoryOrchestrator._num_to_cn(rest)
+        return str(n)
 
     def _log(self, agent: str, content: str):
         """记录对话日志."""

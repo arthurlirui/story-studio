@@ -49,6 +49,9 @@ class StudioConfig:
     web_search_endpoint: str = ""  # 留空用 provider 默认 endpoint
     research_enabled: bool = True  # 关闭则跳过 research/innovate 任务
     research_max_topics: int = 4  # 检索主题数（热点/重要事件/同类小说/创作手法）
+    # REST API 鉴权：留空则不启用鉴权（仅适合本地/内网）；
+    # 设置后所有 /novels* 端点要求请求头 X-API-Key 匹配该值。/health 始终开放。
+    api_key: str = ""
     agents: dict[str, AgentConfig] = field(default_factory=dict)
     # Per-agent 模型路由：{agent_role: model_name}，缺键回退 role 默认值。
     # role 默认：scene_writer/showrunner/world_architect/character_designer → main_model；
@@ -107,6 +110,7 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
         cfg.web_search_endpoint = data.get("web_search_endpoint", cfg.web_search_endpoint)
         cfg.research_enabled = data.get("research_enabled", cfg.research_enabled)
         cfg.research_max_topics = data.get("research_max_topics", cfg.research_max_topics)
+        cfg.api_key = data.get("api_key", cfg.api_key)
 
         if "knowledge_dir" in data:
             cfg.knowledge_dir = data["knowledge_dir"]
@@ -123,6 +127,9 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
         cfg.llm_api_key = os.environ.get("LLM_API_KEY", "")
     if not cfg.web_search_api_key:
         cfg.web_search_api_key = os.environ.get("WEB_SEARCH_API_KEY", "")
+    # API 鉴权密钥 env fallback
+    if not cfg.api_key:
+        cfg.api_key = os.environ.get("STORY_STUDIO_API_KEY", "")
 
     # Ensure directories exist
     Path(cfg.knowledge_dir).mkdir(parents=True, exist_ok=True)
