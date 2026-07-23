@@ -34,6 +34,7 @@ from jobs import (
     JOB_QUEUED,
     JOB_SUCCEEDED,
     JOB_FAILED,
+    JOB_RECOVERABLE,
     make_on_progress,
     finalize_job_after_run_all,
 )
@@ -356,6 +357,70 @@ async def run_all_tasks(job_id: str):
                     ],
                 }
             # 全部成功：填充 result
+            finalize_job_after_run_all(job, planner, orch, fallback_total=0)
+            runner._save_index()
+            return {"job_id": job_id, "status": "succeeded", "summary": s}
+        finally:
+            await client.aclose()
+
+
+@app.post("/novels/{job_id}/resume")
+async def resume_novel(job_id: str):
+    """手动恢复一个 failed/recoverable 的 job，从已有 task_plan.json 断点续跑。
+
+    与 run-all 的区别：resume 专用于崩溃后恢复，强制走 load_plan（不 build_plan），
+    并明确校验 task_plan.json 存在。自动恢复（_auto_recover_jobs）已覆盖大多数
+    场景，此端点给用户手动控制权。
+    """
+    planner, orch, job, client = await _build_planner_for_job(job_id)
+    runner = get_runner()
+    async with runner._get_job_lock(job_id):
+        try:
+            if job.status not in (JOB_FAILED, JOB_RECOVERABLE, JOB_SUCCEEDED):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"job status {job.status} cannot resume (only failed/recoverable/succeeded)",
+                )
+            # 强制 load_plan（断点续跑），无 plan 则无法恢复
+            existing = planner.load_plan()
+            if existing is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="no task_plan.json to resume from, POST /novels first",
+                )
+            job.status = JOB_RUNNING
+            job.error = None
+            job.touch()
+            runner._save_index()
+            _on_progress = make_on_progress(
+                job, planner, orch, on_save=runner._save_index
+            )
+            try:
+                await planner.run_all(on_progress=_on_progress, stop_on_failure=True)
+            except Exception as e:
+                job.status = JOB_FAILED
+                job.error = str(e)
+                job.touch()
+                runner._save_index()
+                raise HTTPException(status_code=500, detail=str(e))
+            s = planner.summary()
+            if s.get("failed", 0) > 0:
+                job.status = JOB_FAILED
+                failed_tasks = [
+                    f"#{t.id}({t.phase})" for t in planner.plan.tasks if t.status == "failed"
+                ]
+                job.error = f"恢复后任务失败 {s['failed']} 个：{', '.join(failed_tasks)}"
+                job.touch()
+                runner._save_index()
+                return {
+                    "job_id": job_id,
+                    "status": "partial_failure",
+                    "summary": s,
+                    "failed_tasks": [
+                        {"id": t.id, "phase": t.phase, "error": t.error}
+                        for t in planner.plan.tasks if t.status == "failed"
+                    ],
+                }
             finalize_job_after_run_all(job, planner, orch, fallback_total=0)
             runner._save_index()
             return {"job_id": job_id, "status": "succeeded", "summary": s}

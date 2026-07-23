@@ -110,6 +110,10 @@ def _make_mock_orchestrator() -> MagicMock:
     orch.project_name = "测试项目"
     orch.total_chapters = 5
     orch.current_chapter = 0
+    # knowledge mock：is_chapter_delivered 默认返回 False（无章节已交付），
+    # 否则 _run_writing_phase 的断电恢复跳过逻辑会因 MagicMock 真值而跳过所有章节。
+    orch.knowledge = MagicMock()
+    orch.knowledge.is_chapter_delivered = MagicMock(return_value=False)
     orch.phase_research = AsyncMethodTracker("调研完成")
     orch.phase_innovate = AsyncMethodTracker("创新亮点清单")
     orch.phase_planning = AsyncMethodTracker("企划完成")

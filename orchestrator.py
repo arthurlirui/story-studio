@@ -500,6 +500,12 @@ class StoryOrchestrator:
 
     async def phase_building(self) -> str:
         """建立阶段: 世界观 + 角色设定."""
+        # 幂等守卫：已有世界观设定则跳过（断电恢复不重跑已完成阶段）
+        existing_settings = self.knowledge.load_world("settings")
+        if existing_settings.strip():
+            logger.info("恢复：世界观设定已存在，跳过 phase_building")
+            self._set_phase(PHASE_BUILDING)
+            return existing_settings
         self._set_phase(PHASE_BUILDING)
         plan = self.knowledge.load_world("plan")
         context = f"项目创作企划:\n{plan}"
@@ -539,6 +545,17 @@ class StoryOrchestrator:
         若未显式指定章节数，尝试从企划书中解析"建议章节数"；
         解析失败则默认 10 章。
         """
+        # 幂等守卫：已有大纲则跳过（断电恢复不重跑已完成阶段）
+        existing_outline = self.knowledge.load_outline()
+        if existing_outline.strip():
+            logger.info("恢复：大纲已存在，跳过 phase_outlining")
+            self._set_phase(PHASE_OUTLINING)
+            # 仍尝试解析总章节数（后续写作阶段需要）
+            if total_chapters is None:
+                plan = self.knowledge.load_world("plan")
+                total_chapters = self._parse_suggested_chapters(plan) or 10
+            self.total_chapters = total_chapters
+            return existing_outline
         self._set_phase(PHASE_OUTLINING)
 
         if total_chapters is None:
