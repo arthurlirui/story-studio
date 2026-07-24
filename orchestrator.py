@@ -322,8 +322,11 @@ class StoryOrchestrator:
 
     def _set_phase(self, phase: str) -> None:
         """切换 phase 并持久化。"""
+        prev = self.phase
         self.phase = phase
         self._save_state()
+        if prev != phase:
+            self._log_run(f"阶段切换: {prev} → {phase}")
 
     def _agent_model(self, role: str, tier: str = "main") -> str:
         """Per-agent 模型路由：agent_models[role] 优先，缺键回退 main/light_model。
@@ -758,6 +761,48 @@ class StoryOrchestrator:
         review = ""
         verdict = "REVISE"
 
+        # 断电恢复：若该章未交付但有 round checkpoint，从崩溃点续写而非整章重写。
+        # checkpoint 保存了最近一轮已产出的 chapter_text/edited/review，恢复后
+        # 跳过已完成的轮次，从下一轮的 write 步骤继续。
+        resume_from_round = 0
+        cp = self.knowledge.load_round_checkpoint(chapter_num)
+        if cp and not self.knowledge.is_chapter_delivered(chapter_num):
+            cp_round = int(cp.get("round", 0))
+            cp_step = cp.get("step", "")
+            # 仅当 checkpoint 轮次合法且小于 max_rounds 才续写
+            if 0 <= cp_round < max_rounds:
+                chapter_text = cp.get("chapter_text", "") or ""
+                edited = cp.get("edited", "") or ""
+                review = cp.get("review", "") or ""
+                verdict = cp.get("verdict", "REVISE") or "REVISE"
+                # 若崩溃在 review 步骤之后（已得 verdict），下一轮应从 round+1 开始；
+                # 若崩溃在 write/edit/continuity（本轮未完成），从当前轮重写。
+                if cp_step == "review" and verdict in ("PASS", "REVISE", "REJECT"):
+                    resume_from_round = cp_round + 1
+                    # 恢复了完整一轮的产物，但 verdict 非 PASS → 进入下一轮重写
+                    self._log_run(
+                        f"恢复第 {chapter_num} 章：从 round {resume_from_round} 续写"
+                        f"（checkpoint round={cp_round} step=review verdict={verdict}）"
+                    )
+                else:
+                    resume_from_round = cp_round
+                    # 本轮未完成，重置本轮产物，从本轮 round_n 的 write 重新开始
+                    chapter_text = ""
+                    edited = ""
+                    review = ""
+                    verdict = "REVISE"
+                    self._log_run(
+                        f"恢复第 {chapter_num} 章：从 round {resume_from_round} 重写"
+                        f"（checkpoint round={cp_round} step={cp_step}，本轮未完成）"
+                    )
+                logger.info(
+                    "第 %d 章断电恢复：从 round %d 续写 (cp step=%s verdict=%s)",
+                    chapter_num, resume_from_round, cp_step, verdict,
+                )
+        elif cp and self.knowledge.is_chapter_delivered(chapter_num):
+            # 章节已交付但 checkpoint 残留（交付时清理失败），主动清理
+            self.knowledge.clear_round_checkpoint(chapter_num)
+
         # 协调简报前缀（若提供）
         brief_prefix = ""
         if chapter_brief or neighbor_briefs:
@@ -776,6 +821,9 @@ class StoryOrchestrator:
             brief_prefix += "\n"
 
         for round_n in range(max_rounds):
+            # 断电恢复：跳过 checkpoint 之前已完成的轮次
+            if round_n < resume_from_round:
+                continue
             # Step 1: Write (第 0 轮用初稿 prompt；后续轮回灌评审意见)
             if round_n == 0:
                 scene_prompt = (
@@ -820,6 +868,11 @@ class StoryOrchestrator:
                 usage=getattr(writer, "last_usage", None) or {},
                 excerpt=chapter_text[:200], duration_ms=duration_ms,
             )
+            # 断电恢复 checkpoint：write 步骤完成
+            self.knowledge.save_round_checkpoint(
+                chapter_num, round_n, "write",
+                chapter_text=chapter_text, batch_id=batch_id,
+            )
 
             # Step 2: Editor polish
             t0 = time.time()
@@ -840,6 +893,11 @@ class StoryOrchestrator:
                 model=getattr(editor, "model", ""), round_n=round_n,
                 usage=getattr(editor, "last_usage", None) or {},
                 excerpt=edited[:200], duration_ms=duration_ms,
+            )
+            # 断电恢复 checkpoint：edit 步骤完成
+            self.knowledge.save_round_checkpoint(
+                chapter_num, round_n, "edit",
+                chapter_text=chapter_text, edited=edited, batch_id=batch_id,
             )
 
             # Step 3: Continuity check（守卫哨兵）
@@ -888,6 +946,12 @@ class StoryOrchestrator:
                 usage=getattr(showrunner, "last_usage", None) or {},
                 excerpt=(review or "")[:200], duration_ms=duration_ms,
             )
+            # 断电恢复 checkpoint：review 步骤完成（含 verdict，是续写判定的关键依据）
+            self.knowledge.save_round_checkpoint(
+                chapter_num, round_n, "review",
+                chapter_text=chapter_text, edited=edited, review=review,
+                verdict=verdict, batch_id=batch_id,
+            )
 
             if verdict == "PASS":
                 self.knowledge.save_chapter(chapter_num, edited, "editor_pass")
@@ -899,11 +963,17 @@ class StoryOrchestrator:
                 rounds_desc = f"{round_n + 1} 轮" if round_n > 0 else "1 轮"
                 # 断电恢复：无论串行/批次，章节交付后都持久化游标 + 记录进度日志。
                 # 批次中途崩溃也能恢复到正确章节（原 save_state_on_pass 仅控制旧行为）。
+                # 游标始终推进到已交付的最大章节号（批次并行下多章可能乱序完成）。
+                if chapter_num > self.current_chapter:
+                    self.current_chapter = chapter_num
                 self._append_progress({
                     "phase": PHASE_WRITING, "chapter": chapter_num,
                     "batch_id": batch_id, "event": "chapter_passed",
                     "detail": f"{rounds_desc}通过",
                 })
+                # 章节已交付，清理本轮 checkpoint
+                self.knowledge.clear_round_checkpoint(chapter_num)
+                self._log_run(f"第 {chapter_num} 章 ✅ 通过（{rounds_desc}）")
                 if save_state_on_pass:
                     self._save_state()
                 return f"## 第 {chapter_num} 章 ✅ 通过（{rounds_desc}）\n\n{edited}"
@@ -917,11 +987,16 @@ class StoryOrchestrator:
             literary_advisor=literary_advisor,
         )
         # 断电恢复：耗尽交付也记录进度日志 + 持久化游标
+        if chapter_num > self.current_chapter:
+            self.current_chapter = chapter_num
         self._append_progress({
             "phase": PHASE_WRITING, "chapter": chapter_num,
             "batch_id": batch_id, "event": "chapter_exhausted",
             "detail": f"{max_rounds} 轮未 PASS 仍交付",
         })
+        # 章节已交付，清理本轮 checkpoint
+        self.knowledge.clear_round_checkpoint(chapter_num)
+        self._log_run(f"第 {chapter_num} 章 ⚠️ 修订耗尽（{max_rounds} 轮未 PASS 仍交付）")
         if save_state_on_pass:
             self._save_state()
         return (
@@ -1019,6 +1094,10 @@ class StoryOrchestrator:
         # 受可用编剧数约束
         writer_count = max(1, min(count, len(self.scene_writers)))
         chapter_nums = list(range(start_chapter, start_chapter + writer_count))
+        self._log_run(
+            f"批次并行写作开始: 章 {start_chapter}-{start_chapter + writer_count - 1}"
+            f"（{writer_count} 章并发）"
+        )
 
         # ── Step A: 预协调简报 ──────────────────────────────────
         batch_id, brief = await self.coordinator.plan_batch(start_chapter, writer_count)
@@ -1721,6 +1800,26 @@ class StoryOrchestrator:
             "content": content[:500],
             "time": datetime.now().isoformat(),
         })
+
+    def _log_run(self, msg: str) -> None:
+        """追加一行人类可读的运行日志到 {output_dir}/run.log（断电后人工排查用）。
+
+        与 WorkLog（JSONL 机器审计）和 progress_log（嵌在 run_state.json）互补：
+        - run.log 面向人类，append-only，带时间戳，记录关键事件与恢复点。
+        - 失败仅警告，绝不影响主流程。
+
+        多线程安全：批次并行下多协程可能并发 append。run.log 是 append-only
+        线性日志，OS 级 append 写对小行基本原子；偶发交错可接受（这是人类排查
+        日志，不是恢复数据源）。恢复数据源是 checkpoints/ + run_state.json。
+        """
+        try:
+            log_path = Path(self.cfg.output_dir) / "run.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
+            with log_path.open("a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception as e:
+            logger.warning("写 run.log 失败: %s", e)
 
     def get_status(self) -> dict:
         """获取当前状态."""

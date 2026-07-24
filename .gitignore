@@ -51,3 +51,5 @@ jobs/
 .env
 config/settings.yaml
 >>>>>>> 526e7f056fba7e56e975e5f2b965e16e7e911b5c
+*.db
+*.log

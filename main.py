@@ -53,6 +53,91 @@ def _format_job_progress(j) -> str:
     return f"{j.progress[0]}/{j.progress[1]}"
 
 
+def _detect_resumable_run(orchestrator: StoryOrchestrator) -> dict | None:
+    """检测当前 knowledge_dir 下是否有可恢复的未完成运行。
+
+    断电恢复入口：扫描 run_state.json + task_plan.json，若存在未完成运行
+    （phase != complete 且 task_plan 有 pending/failed 任务），返回描述 dict；
+    否则返回 None。
+
+    返回 dict 结构:
+        {"phase": str, "current_chapter": int, "total_chapters": int,
+         "project_name": str, "job_id": str, "pending_tasks": int,
+         "failed_tasks": int, "total_tasks": int}
+    """
+    state_path = Path(orchestrator.cfg.knowledge_dir) / "run_state.json"
+    plan_path = Path(orchestrator.cfg.knowledge_dir) / "task_plan.json"
+    if not state_path.exists() and not plan_path.exists():
+        return None
+
+    # 复用 orchestrator 已恢复的内存状态（__init__ 已 _load_state_from_disk）
+    phase = orchestrator.phase or "idle"
+    project = orchestrator.project_name or ""
+    current_chapter = orchestrator.current_chapter or 0
+    total_chapters = orchestrator.total_chapters or 0
+    job_id = orchestrator.job_id or ""
+
+    # 若 phase == complete 且无 pending/failed 任务，视为已完成，不可恢复
+    pending = 0
+    failed = 0
+    total_tasks = 0
+    if plan_path.exists():
+        from planner import TaskPlanner
+        planner = TaskPlanner(
+            orchestrator, orchestrator.knowledge, orchestrator.cfg,
+            orchestrator.worklog,
+        )
+        plan = planner.load_plan()
+        if plan:
+            total_tasks = len(plan.tasks)
+            for t in plan.tasks:
+                if t.status == "pending":
+                    pending += 1
+                elif t.status == "failed":
+                    failed += 1
+            # load_plan 会把 running→pending，所以 pending 已含崩溃中的任务
+
+    # 完成态且无待办/失败 → 不可恢复
+    if phase == "complete" and pending == 0 and failed == 0:
+        return None
+    # idle 且无任何任务清单 → 不可恢复（从未开始）
+    if phase == "idle" and total_tasks == 0:
+        return None
+
+    return {
+        "phase": phase,
+        "current_chapter": current_chapter,
+        "total_chapters": total_chapters,
+        "project_name": project,
+        "job_id": job_id,
+        "pending_tasks": pending,
+        "failed_tasks": failed,
+        "total_tasks": total_tasks,
+    }
+
+
+def _print_resume_hint(info: dict) -> None:
+    """打印断电恢复提示。"""
+    phase_desc = {
+        "research": "调研", "innovate": "创新亮点", "planning": "策划",
+        "building": "设定", "outlining": "大纲", "writing": "写作",
+        "complete": "完稿", "idle": "待启动",
+    }.get(info["phase"], info["phase"])
+    chapter_info = ""
+    if info["phase"] == "writing" and info["total_chapters"]:
+        chapter_info = f"，第 {info['current_chapter']}/{info['total_chapters']} 章"
+    print("\n" + "═" * 56)
+    print(f"⚡ 检测到未完成的小说写作运行（可断电恢复）")
+    print(f"   项目: {info['project_name'] or '(未命名)'}")
+    print(f"   阶段: {phase_desc}{chapter_info}")
+    if info["total_tasks"]:
+        print(f"   任务: {info['pending_tasks']} 待执行 / {info['failed_tasks']} 失败"
+              f" / {info['total_tasks']} 总计")
+    print(f"   job_id: {info['job_id'][:24] if info['job_id'] else '(无)'}")
+    print(f"   可用命令: /resume 从断点继续  |  /status 查看详情  |  /discard 放弃")
+    print("═" * 56 + "\n")
+
+
 def help_text():
     print("""
 📋 可用命令:
@@ -64,6 +149,8 @@ def help_text():
   /tasks               — 查看任务清单与各任务状态
   /run-task [N]        — 执行第 N 个任务（缺省=下一个未完成的）
   /run-all             — 按序执行所有未完成任务
+  /resume              — 断电恢复：从 task_plan.json 断点继续未完成任务
+  /discard             — 放弃当前未完成运行（归档 state/plan 到 archive/）
   /phase               — 查看当前阶段
   /next                — 进入下一阶段
   /write [章节号]       — 写指定章节（默认下一章）
@@ -108,6 +195,14 @@ async def main_interactive(orchestrator: StoryOrchestrator):
     print(f"🧠 LLM 模型: {orchestrator.cfg.main_model} (主力) / {orchestrator.cfg.light_model} (轻量)")
     print(f"📂 知识库: {orchestrator.cfg.knowledge_dir}")
     print()
+
+    # 断电恢复检测：启动时扫描未完成运行并提示
+    try:
+        resumable = _detect_resumable_run(orchestrator)
+        if resumable:
+            _print_resume_hint(resumable)
+    except Exception as e:
+        logger.warning("恢复检测失败: %s", e)
 
     while True:
         try:
@@ -427,6 +522,81 @@ async def _dispatch_command(raw: str, orchestrator: StoryOrchestrator) -> bool:
                       f"{s['skipped']} 跳过 / {s['total']} 总计")
         except Exception as e:
             print(f"\n❌ 中断: {e}")
+        return False
+
+    if raw == "/resume":
+        # 断电恢复：从 task_plan.json 断点继续执行未完成任务
+        from planner import TaskPlanner
+        planner = TaskPlanner(
+            orchestrator, orchestrator.knowledge, orchestrator.cfg,
+            orchestrator.worklog,
+        )
+        plan = planner.load_plan()
+        if not plan:
+            print("\n⏳ 没有可恢复的运行（无 task_plan.json）。先用 /plan 生成任务清单。")
+            return False
+        pending = sum(1 for t in plan.tasks if t.status == "pending")
+        failed = sum(1 for t in plan.tasks if t.status == "failed")
+        if pending == 0 and failed == 0:
+            print("\n✅ 所有任务已完成，无需恢复。")
+            return False
+        phase_desc = {
+            "writing": f"写作阶段（第 {orchestrator.current_chapter}/"
+                       f"{orchestrator.total_chapters} 章）",
+        }.get(orchestrator.phase, orchestrator.phase)
+        print(f"\n⚡ 从断点恢复运行（阶段: {phase_desc}）")
+        print(f"   待执行 {pending} / 失败 {failed} / 总计 {len(plan.tasks)} 任务")
+        print("   load_plan 已自动把崩溃中 running 的任务重置为 pending\n")
+        orchestrator._log_run(
+            f"断电恢复启动：phase={orchestrator.phase} "
+            f"pending={pending} failed={failed} chapter={orchestrator.current_chapter}"
+        )
+        print("🚀 按序执行所有未完成任务...")
+
+        def _on_progress(t):
+            print(f"  → #{t.id} {t.name}: {t.status}")
+
+        try:
+            await planner.run_all(on_progress=_on_progress, stop_on_failure=True)
+            s = planner.summary()
+            if s["failed"] > 0:
+                failed_tasks = [
+                    f"#{t.id}({t.phase})" for t in planner.plan.tasks
+                    if t.status == "failed"
+                ]
+                print(f"\n⚠️ 部分失败: {s['failed']} 个任务 — {', '.join(failed_tasks)}")
+                print(f"   完成: {s['done']} 成功 / {s['skipped']} 跳过 / {s['total']} 总计")
+            else:
+                print(f"\n✅ 恢复完成: {s['done']} 成功 / {s['failed']} 失败 / "
+                      f"{s['skipped']} 跳过 / {s['total']} 总计")
+                orchestrator._log_run("断电恢复运行完成")
+        except Exception as e:
+            print(f"\n❌ 恢复中断: {e}")
+            orchestrator._log_run(f"断电恢复中断: {e}")
+        return False
+
+    if raw == "/discard":
+        # 放弃当前未完成运行：归档 run_state.json + task_plan.json 到 archive/{ts}/
+        import shutil
+        from datetime import datetime as _dt
+        kd = Path(orchestrator.cfg.knowledge_dir)
+        state_path = kd / "run_state.json"
+        plan_path = kd / "task_plan.json"
+        if not state_path.exists() and not plan_path.exists():
+            print("\n⏳ 没有可放弃的运行（无 run_state.json / task_plan.json）。")
+            return False
+        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+        archive_dir = kd / "archive" / ts
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        moved = []
+        for p in (state_path, plan_path):
+            if p.exists():
+                shutil.move(str(p), str(archive_dir / p.name))
+                moved.append(p.name)
+        print(f"\n🗑️ 已归档未完成运行到 {archive_dir}")
+        print(f"   归档文件: {', '.join(moved)}")
+        print(f"   （未删除，可事后检查；当前 orchestrator 内存状态保留）")
+        orchestrator._log_run(f"放弃运行，归档到 {archive_dir}（{', '.join(moved)}）")
         return False
 
     if raw.startswith("/worklog"):

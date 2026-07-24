@@ -336,6 +336,93 @@ class KnowledgeStore:
         """
         return (self.summaries_dir / f"chapter_{chapter_num:03d}.md").exists()
 
+    # ── Round-level checkpoints (断电恢复：章节修订中途崩溃续写) ──
+
+    def _checkpoint_dir(self) -> Path:
+        """checkpoints 根目录：story/checkpoints/。"""
+        return self.story_dir / "checkpoints"
+
+    def _chapter_checkpoint_state_path(self, chapter_num: int) -> Path:
+        """单章最近一轮正文快照路径：story/checkpoints/chapter_NNN_state.json。
+
+        保存最近一轮已产出的 chapter_text / edited / review，用于崩溃后
+        从当前轮续写而非整章重写。章节交付后清理。
+        """
+        return self._checkpoint_dir() / f"chapter_{chapter_num:03d}_state.json"
+
+    def save_round_checkpoint(
+        self,
+        chapter_num: int,
+        round_n: int,
+        step: str,
+        *,
+        chapter_text: str = "",
+        edited: str = "",
+        review: str = "",
+        verdict: str = "",
+        batch_id: str | None = None,
+    ) -> None:
+        """写一份轮次级 checkpoint（章节修订流水线中途崩溃续写用）。
+
+        每轮的 write/edit/review 步骤后各调一次，把当前轮已产出的正文快照
+        + 进度元信息原子写到 story/checkpoints/chapter_NNN_state.json。
+
+        Args:
+            chapter_num: 章节号。
+            round_n: 当前修订轮次（0-based）。
+            step: 当前步骤标记，∈ write|edit|continuity|review。
+            chapter_text/edited/review: 当前轮已产出的正文/润色稿/评审。
+            verdict: review 步骤时的 VERDICT（PASS/REVISE/REJECT），其余步骤空。
+            batch_id: 并行批次 ID（可空）。
+
+        多线程安全：批次并行下每章有独立 chapter_NNN 命名空间，无写冲突；
+        写入用 _atomic_write_text 保证原子性。
+        """
+        import json as _json
+        cp = {
+            "chapter": chapter_num,
+            "round": round_n,
+            "step": step,
+            "verdict": verdict,
+            "batch_id": batch_id,
+            "chapter_text": chapter_text,
+            "edited": edited,
+            "review": review,
+            "ts": datetime.now().isoformat(),
+        }
+        _atomic_write_text(
+            self._chapter_checkpoint_state_path(chapter_num),
+            _json.dumps(cp, ensure_ascii=False, indent=2),
+        )
+
+    def load_round_checkpoint(self, chapter_num: int) -> dict | None:
+        """读取某章的轮次级 checkpoint。不存在或损坏返回 None。
+
+        供 _write_chapter_with_revisions 入口判断是否可从崩溃点续写：
+        若该章未交付（无 summary）但有 checkpoint，则从 checkpoint.round 继续。
+        """
+        import json as _json
+        path = self._chapter_checkpoint_state_path(chapter_num)
+        if not path.exists():
+            return None
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return None
+            return data
+        except (_json.JSONDecodeError, ValueError, OSError):
+            return None
+
+    def clear_round_checkpoint(self, chapter_num: int) -> None:
+        """章节交付后清理其 checkpoint（best-effort，失败仅警告）。"""
+        path = self._chapter_checkpoint_state_path(chapter_num)
+        if not path.exists():
+            return
+        try:
+            path.unlink()
+        except OSError as e:
+            logger.warning("清理章节 %d checkpoint 失败: %s", chapter_num, e)
+
     # ── Research KB (variant + series, read-write variant / read-only series) ──
 
     def _safe_topic(self, topic: str) -> str:
