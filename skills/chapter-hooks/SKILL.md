@@ -98,6 +98,9 @@ description: "Design chapter hooks during drafting: opening hooks, closing cliff
 | 科幻 | 疑问钩子、剧情错位、倒计时钩子 | 伪科学解释 |
 | 恐怖/惊悚 | 危险降临、留白反转、高压开场 | 廉价 jump scare |
 | 历史/架空 | 剧情错位、新设定引入、情绪高潮 | 现代梗破坏氛围 |
+| 都市高武 | 高压开场、动作中断、新设定引入、疑问钩子、情绪高潮 | 连续打脸无递进、金手指过早暴露 |
+
+> 都市高武题材的完整钩子设计专章（分阶段策略、爽点钩子化映射、信息差模板）见 `knowledge/urban-high-martial/world_knowledge.md` 第五节。
 
 ## 反模式（禁止）
 

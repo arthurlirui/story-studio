@@ -49,6 +49,22 @@ DEFAULT_AUTHOR = "独孤元景 著"
 # 封面工具脚本路径（相对项目根）
 _COVER_TOOL = Path(__file__).resolve().parent / "tools" / "book_cover_comfy.py"
 
+# 题材知识库根目录（仓库根 knowledge/<slug>/world_knowledge.md）
+_GENRE_KNOWLEDGE_ROOT = Path(__file__).resolve().parent / "knowledge"
+# 题材关键词 → 知识库目录 slug。
+# 匹配时按关键词长度倒序（先长后短），避免"高武"抢在"都市高武"前命中。
+_GENRE_KNOWLEDGE_MAP = {
+    "都市高武": "urban-high-martial",
+    "高武": "urban-high-martial",
+    "武道": "urban-high-martial",
+    "古风世情": "ancient-social-drama",
+    "世情": "ancient-social-drama",
+    "古文虐恋": "ancient-tragic-romance",
+    "虐恋": "ancient-tragic-romance",
+}
+# 注入专家上下文的题材知识最大字符数（防吃爆 max_context_chars 预算）
+_GENRE_KNOWLEDGE_MAX_CHARS = 4000
+
 
 def _truncate_at_sentence(text: str, max_len: int) -> str:
     """把超长文本截断到 ≤ max_len，优先在句末标点处断开。
@@ -590,10 +606,22 @@ class StoryOrchestrator:
         self._log("title_designer", title_advice)
 
         await self._rate_limit_pause()
-        hook_advice = await self.hooker.think(
-            f"请为以下章节大纲的每一章设计章末钩子方案，并指出哪些章缺少有效钩子。\n\n{outline}",
-            context,
+        hook_prompt = (
+            f"请为以下章节大纲的每一章设计章末钩子方案，并指出哪些章缺少有效钩子。\n\n{outline}"
         )
+        hook_context = context
+        # 题材感知：命中题材知识库时，将其钩子设计专章注入 Hooker 上下文
+        genre_slug = self._detect_genre(self.knowledge.load_world("plan"))
+        if genre_slug:
+            genre_knowledge = self._load_genre_knowledge(genre_slug)
+            if genre_knowledge:
+                logger.info("检测到题材知识库: %s，注入 Hooker 上下文", genre_slug)
+                hook_prompt = (
+                    f"本书题材命中「{genre_slug}」题材知识库，请参考其中的钩子设计专章"
+                    f"（分阶段钩子策略、爽点钩子化映射、题材特有反模式）。\n\n" + hook_prompt
+                )
+                hook_context = context + f"\n\n## 题材知识库（{genre_slug}）\n{genre_knowledge}"
+        hook_advice = await self.hooker.think(hook_prompt, hook_context)
         self._log("hooker", hook_advice)
 
         await self._rate_limit_pause()
@@ -1071,6 +1099,30 @@ class StoryOrchestrator:
             if 1 <= n <= 200:
                 return n
         return 0
+
+    @staticmethod
+    def _detect_genre(plan: str) -> str | None:
+        """从企划书（world/plan.md）中检测题材关键词，返回知识库 slug；未命中返回 None。
+
+        关键词按长度倒序匹配（先长后短），确保"都市高武"优先于"高武"命中。
+        """
+        if not plan:
+            return None
+        for keyword in sorted(_GENRE_KNOWLEDGE_MAP, key=len, reverse=True):
+            if keyword in plan:
+                return _GENRE_KNOWLEDGE_MAP[keyword]
+        return None
+
+    @staticmethod
+    def _load_genre_knowledge(slug: str, max_chars: int = _GENRE_KNOWLEDGE_MAX_CHARS) -> str:
+        """加载仓库根 knowledge/<slug>/world_knowledge.md，截断到 max_chars；缺失返回空串。"""
+        if not slug:
+            return ""
+        path = _GENRE_KNOWLEDGE_ROOT / slug / "world_knowledge.md"
+        if not path.exists():
+            logger.warning("题材知识库文件缺失: %s", path)
+            return ""
+        return path.read_text(encoding="utf-8")[:max_chars]
 
     async def phase_writing_batch(
         self, start_chapter: int, count: int
