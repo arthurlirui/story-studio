@@ -1,0 +1,39 @@
+{
+  "genre": "fierce_female",
+  "category": "female",
+  "default_pov": "first_person",
+  "word_range": {"min": 3000, "max": 50000},
+  "section_target": 1000,
+  "climax_density": "every_3_sections",
+  "section_order": [
+    "extreme_oppression",
+    "crazy_rebellion",
+    "everyone_shocked",
+    "escalating_chaos",
+    "world_truth_revealed",
+    "ultimate_revenge"
+  ],
+  "golden_fingers": ["system_override", "extreme_defect", "death_wish", "past_life_memory", "rule_breaking_insight"],
+  "required_knowledge": ["anti_routine_storytelling", "emotional_catharsis_design", "extreme_character_writing"],
+  "title_formulas": [
+    "{身份}后，{不/偏要}{反常动作}",
+    "规则怪谈：我靠发疯整顿{场景}",
+    "穿成{身份}，我反手{动作}",
+    "死后第{N}天，{关键人物}疯了"
+  ],
+  "hook_templates": [
+    "我被生母按进冰水里的时候，脑子里突然多了一本剧本。一本写着'女主攻略指南'的剧本。我笑了——上一世我照做了。这一世？",
+    "穿成虐文女主那天，系统告诉我：只要按剧情被男主虐够三生三世，就能获得HE结局。我看着眼前的悬崖，选了第三个选项。"
+  ],
+  "mood_defaults": {"suppression_pct": 40, "explosion_pct": 55, "healing_pct": 5},
+  "quality_checks": [
+    "first_sentence_is_conflict",
+    "crazy_behavior_has_inner_logic",
+    "no_hidden_romance_line",
+    "suppression_to_explosion_ratio_1_to_2",
+    "bystander_reactions_amplify_satisfaction",
+    "small_thrill_every_3_sections",
+    "big_climax_every_10_sections"
+  ],
+  "genre_name_zh": "大女主发疯文学"
+}

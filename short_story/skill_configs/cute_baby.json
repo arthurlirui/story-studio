@@ -1,0 +1,38 @@
+{
+  "genre": "cute_baby",
+  "category": "female",
+  "default_pov": "first_person",
+  "word_range": {"min": 8000, "max": 50000},
+  "section_target": 2000,
+  "climax_density": "every_3_sections",
+  "section_order": [
+    "vulnerable_opening",
+    "baby_appears",
+    "baby_assists",
+    "identity_reversal",
+    "whole_family_dotes",
+    "scumbag_crematorium"
+  ],
+  "golden_fingers": ["genius_baby", "hidden_identity", "family_backing", "past_life_memory"],
+  "required_knowledge": ["child_character_writing", "group_doting_pacing", "chase_wife_rhythm", "identity_reveal_timing"],
+  "title_formulas": [
+    "萌宝来袭：{身份}爹地请签收",
+    "一胎{N}宝：夫人马甲又掉了",
+    "五年后带崽归来前夫求复合",
+    "天才萌宝：妈咪又跑了"
+  ],
+  "hook_templates": [
+    "'{女主}，{男主}说了，只要您交出孩子，这五百万立刻到账。'三年前我揣着孕检单连夜逃离——留下来的离婚协议被摔在脸上。",
+    "我儿子三岁，会背唐诗、会打电话告我黑状。这一天他用我的手机按了一串号码——是他那个三年没联系过的亲爹。"
+  ],
+  "mood_defaults": {"suppression_pct": 30, "explosion_pct": 30, "healing_pct": 40},
+  "quality_checks": [
+    "baby_appears_within_300_words",
+    "baby_is_child_not_god",
+    "scumbag_rejected_at_least_3_times",
+    "doting_scene_also_moves_plot",
+    "no_instant_reconciliation",
+    "baby_age_consistent_with_ability"
+  ],
+  "genre_name_zh": "萌宝团宠"
+}

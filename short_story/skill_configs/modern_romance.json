@@ -1,0 +1,38 @@
+{
+  "genre": "modern_romance",
+  "category": "female",
+  "default_pov": "first_person",
+  "word_range": {"min": 6000, "max": 80000},
+  "section_target": 1500,
+  "climax_density": "every_3_sections",
+  "section_order": [
+    "contract_or_flash_marriage",
+    "cold_first_impression",
+    "hidden_sugar_drops",
+    "public_protection",
+    "mutual_falling",
+    "confession_and_closure"
+  ],
+  "golden_fingers": ["hidden_identity", "secret_crush_years", "dual_masks"],
+  "required_knowledge": ["romance_dialogue_techniques", "sugar_density_pacing", "contrast_character_design"],
+  "title_formulas": [
+    "先婚后爱：{女主名}的甜宠日常",
+    "相亲当天，闪婚{身份}",
+    "契约成婚：{男主姓}先生的甜蜜陷阱",
+    "{动作}后，被{身份}温柔诱捕"
+  ],
+  "hook_templates": [
+    "一场大雨里，我拦下了{男主}的黑色迈巴赫。没人知道，我拦的不是车，是最后一根救命稻草。",
+    "我跟{男主}只见了一面就领了证。他是{身份}，惜字如金；我是被他从{场景}捡回去的。"
+  ],
+  "mood_defaults": {"suppression_pct": 15, "explosion_pct": 25, "healing_pct": 60},
+  "quality_checks": [
+    "hook_in_first_300_words",
+    "first_sugar_drop_by_1000_words",
+    "dialogue_ratio_above_50pct",
+    "sugar_every_3_sections",
+    "no_misunderstanding_lasting_over_3_sections",
+    "male_lead_public_protection_every_5_sections"
+  ],
+  "genre_name_zh": "现代言情甜宠"
+}

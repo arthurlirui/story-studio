@@ -1,0 +1,40 @@
+{
+  "genre": "farming_business",
+  "category": "female",
+  "default_pov": "first_person",
+  "word_range": {"min": 3000, "max": 80000},
+  "section_target": 1500,
+  "climax_density": "every_3_sections",
+  "section_order": [
+    "desperate_agricultural_opening",
+    "golden_finger_activation",
+    "first_harvest_and_sale",
+    "industrial_upgrade",
+    "competitor_slap_face",
+    "community_prosperity",
+    "ultimate_achievement"
+  ],
+  "golden_fingers": ["farm_space", "spirit_spring", "cooking_system", "planting_skill", "prophecy_knowledge"],
+  "required_knowledge": ["food_sensory_description", "agricultural_progression_pacing", "pastoral_atmosphere_writing"],
+  "title_formulas": [
+    "回村种田后，我靠{金手指}爆红了",
+    "食神系统在手，我在{时空}开食肆",
+    "荒年空间装满粮，{反派}悔断肠",
+    "穿成农家丫头，带着空间赚大钱"
+  ],
+  "hook_templates": [
+    "穿越到古代穷村子第三天，家里只剩半碗糙米。我弟饿得啃树皮，隔壁路过捂着鼻子说：'这一家子怕是要饿死。'我在灶台底下找到一粒会发光的种子——",
+    "重生回1985年的第一天，我做的第一件事是冲进供销社。把全家攒了三年的布票全换了的确良——因为三个月后布票取消，这些连废纸都不如。"
+  ],
+  "mood_defaults": {"suppression_pct": 20, "explosion_pct": 30, "healing_pct": 50},
+  "quality_checks": [
+    "conflict_within_first_300_words",
+    "golden_finger_fits_farm_setting",
+    "food_description_uses_all_five_senses",
+    "produce_to_sell_to_shock_loop_every_3_sections",
+    "milestone_every_3_to_5_sections",
+    "healing_atmosphere_present",
+    "light_conflict_not_heavy_drama"
+  ],
+  "genre_name_zh": "种田经营"
+}

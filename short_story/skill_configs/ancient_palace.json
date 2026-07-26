@@ -1,0 +1,41 @@
+{
+  "genre": "ancient_palace",
+  "category": "female",
+  "default_pov": "first_person",
+  "word_range": {"min": 6000, "max": 80000},
+  "section_target": 1500,
+  "climax_density": "every_3_sections",
+  "section_order": [
+    "tragic_previous_life",
+    "rebirth_awakening",
+    "golden_finger_reveal",
+    "first_slap_face",
+    "escalating_conflict",
+    "identity_revelation",
+    "public_execution",
+    "causal_closure"
+  ],
+  "golden_fingers": ["rebirth_memory", "mind_reading", "space", "medical_skill", "prophecy_knowledge"],
+  "required_knowledge": ["ancient_etiquette", "harem_ranking", "palace_politics", "concubine_system"],
+  "title_formulas": [
+    "重生{N}年，{反派}慌了",
+    "开局绑定{金手指}，我把{对手}老底掀翻了",
+    "被{处境}，我亮出{底牌}",
+    "穿成{身份}，{反转}"
+  ],
+  "hook_templates": [
+    "烈火灼烧皮肤的剧痛，是{女主}最后的记忆。她倾尽半生扶持{渣男}，最后却落得满门抄斩。再睁眼，回到了{关键时间点}——",
+    "一阵晕眩，{女主}差点栽倒。等下——她不是已经被一杯毒酒断了性命吗？怎么会……？"
+  ],
+  "mood_defaults": {"suppression_pct": 35, "explosion_pct": 50, "healing_pct": 15},
+  "quality_checks": [
+    "conflict_within_first_300_words",
+    "golden_finger_revealed_by_1000_words",
+    "small_slap_every_3_sections",
+    "big_reversal_every_10_sections",
+    "section_ends_with_cliffhanger",
+    "revenge_completed_within_3_sections",
+    "no_more_than_5_named_characters"
+  ],
+  "genre_name_zh": "古代言情宫斗宅斗"
+}

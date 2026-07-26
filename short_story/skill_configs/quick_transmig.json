@@ -1,0 +1,39 @@
+{
+  "genre": "quick_transmig",
+  "category": "female",
+  "default_pov": "first_person",
+  "word_range": {"min": 3000, "max": 80000},
+  "section_target": 1500,
+  "climax_density": "every_3_sections",
+  "section_order": [
+    "extreme_transmigration_opening",
+    "system_binding",
+    "first_slap_face",
+    "escalate_and_collect",
+    "world_wrap_hook",
+    "next_world_preview"
+  ],
+  "golden_fingers": ["system_tasks", "skill_accumulation", "anti_plot_script", "cross_world_knowledge"],
+  "required_knowledge": ["unit_drama_structure", "multi_world_pacing", "system_character_design"],
+  "title_formulas": [
+    "{身份标签}她不干了",
+    "快穿：那个大佬她不对劲",
+    "穿成{身份}后我把剧情撕了",
+    "系统让我{任务}，我{反转}"
+  ],
+  "hook_templates": [
+    "穿成虐文女主，系统让我收集虐心值才能回家。霸总男主正捏着我的下巴：'签字离婚。'系统音：【虐心值：2/100。】配合？配合你个大头鬼。",
+    "穿成修真文里的炮灰师妹，还有三分钟就要被女主一巴掌扇飞。原主记忆涌上来：入门三年，灵根最差的杂役。跪？前世996猝死，这辈子还跪？"
+  ],
+  "mood_defaults": {"suppression_pct": 25, "explosion_pct": 55, "healing_pct": 20},
+  "quality_checks": [
+    "conflict_in_first_300_words",
+    "golden_finger_activated_by_1000_words",
+    "system_binding_in_2_sentences",
+    "each_world_5000_to_10000_words",
+    "complete_small_climax_per_world",
+    "main_line_mystery_throughout",
+    "world_switch_variety_in_settings"
+  ],
+  "genre_name_zh": "快穿"
+}

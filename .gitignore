@@ -53,3 +53,10 @@ config/settings.yaml
 >>>>>>> 526e7f056fba7e56e975e5f2b965e16e7e911b5c
 *.db
 *.log
+
+# Short story generation outputs
+short_story/output/
+short_story/output_full/
+short_story/output_quick/
+short_story/batch50.log
+short_story/__pycache__/

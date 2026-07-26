@@ -1,0 +1,27 @@
+{
+  "genre": "rebirth_era",
+  "category": "female",
+  "default_pov": "first_person",
+  "word_range": {"min": 6000, "max": 50000},
+  "section_target": 1500,
+  "climax_density": "every_3_sections",
+  "section_order": [
+    "rebirth_awakening",
+    "dump_the_jerk",
+    "first_profit",
+    "business_upgrade",
+    "jerk_regrets",
+    "career_peak",
+    "romance_tie_up"
+  ],
+  "golden_fingers": ["rebirth_knowledge", "space", "system"],
+  "required_knowledge": ["era_economics", "ration_coupons", "reform_timeline"],
+  "title_formulas": ["重生{N}年_{action}_{result}"],
+  "mood_defaults": {"suppression_pct": 30, "explosion_pct": 50, "healing_pct": 20},
+  "quality_checks": [
+    "no_era_anachronism",
+    "hook_in_first_300_words",
+    "golden_finger_revealed_by_ch2",
+    "section_ends_with_cliffhanger"
+  ]
+}
