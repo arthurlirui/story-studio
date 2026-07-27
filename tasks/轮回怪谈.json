@@ -1,0 +1,26 @@
+{
+  "pipeline": "lunhui",
+  "display_name": "轮回怪谈系列",
+  "base_dir": "series/轮回怪谈/variants",
+  "variant_dirs": [
+    "01_十日长安",
+    "02_焚书者",
+    "03_轮回三国",
+    "04_靖康棋局",
+    "05_永历不死",
+    "06_封神残局",
+    "07_山海轮回",
+    "08_聊斋十日",
+    "09_白蛇轮回",
+    "10_敦煌千夜"
+  ],
+  "stages": [
+    {"name": "summaries", "enabled": true},
+    {"name": "polish_outline", "enabled": true},
+    {"name": "write_chapters", "enabled": true},
+    {"name": "deai", "enabled": true},
+    {"name": "export", "enabled": true}
+  ],
+  "total_chapters": 30,
+  "batch_size": 3
+}
