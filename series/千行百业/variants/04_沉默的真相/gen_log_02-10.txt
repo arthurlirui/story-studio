@@ -1,0 +1,22 @@
+
+=== Chapter 002: 十六个月的工资 ===
+  Saved: /home/pz03-b-003-pcl/code/story-studio/series/千行百业/variants/04_沉默的真相/knowledge/story/chapters/chapter_002.md (4502 chars, ~2251 words)
+
+=== Chapter 003: 沈渡 ===
+  Saved: /home/pz03-b-003-pcl/code/story-studio/series/千行百业/variants/04_沉默的真相/knowledge/story/chapters/chapter_003.md (3526 chars, ~1763 words)
+
+=== Chapter 004: 鸿发工地 ===
+  Saved: /home/pz03-b-003-pcl/code/story-studio/series/千行百业/variants/04_沉默的真相/knowledge/story/chapters/chapter_004.md (4101 chars, ~2050 words)
+
+=== Chapter 005: 第一次跟踪 ===
+  Saved: /home/pz03-b-003-pcl/code/story-studio/series/千行百业/variants/04_沉默的真相/knowledge/story/chapters/chapter_005.md (4353 chars, ~2176 words)
+
+=== Chapter 006: 陈望秋 ===
+  API error: HTTPSConnectionPool(host='llmapi.pcl.ac.cn', port=443): Read timed out. (read timeout=180)
+  FAILED
+Chapter 007 exists (22254 bytes), skip
+Chapter 008 exists (18734 bytes), skip
+
+=== Chapter 009: 第一次报道 ===
+  Saved: /home/pz03-b-003-pcl/code/story-studio/series/千行百业/variants/04_沉默的真相/knowledge/story/chapters/chapter_009.md (4695 chars, ~2347 words)
+Chapter 010 exists (12035 bytes), skip
