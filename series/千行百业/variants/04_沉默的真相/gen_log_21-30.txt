@@ -1,0 +1,32 @@
+
+=== Chapter 021: 回湖南 ===
+  API error: HTTPSConnectionPool(host='llmapi.pcl.ac.cn', port=443): Read timed out. (read timeout=180)
+  FAILED
+
+=== Chapter 022: 报道终稿 ===
+  Saved: /home/pz03-b-003-pcl/code/story-studio/series/千行百业/variants/04_沉默的真相/knowledge/story/chapters/chapter_022.md (4951 chars, ~2475 words)
+
+=== Chapter 023: 撤稿 ===
+  Saved: /home/pz03-b-003-pcl/code/story-studio/series/千行百业/variants/04_沉默的真相/knowledge/story/chapters/chapter_023.md (3623 chars, ~1811 words)
+
+=== Chapter 024: 天台 ===
+  Saved: /home/pz03-b-003-pcl/code/story-studio/series/千行百业/variants/04_沉默的真相/knowledge/story/chapters/chapter_024.md (4528 chars, ~2264 words)
+
+=== Chapter 025: 代价提前算好 ===
+  Saved: /home/pz03-b-003-pcl/code/story-studio/series/千行百业/variants/04_沉默的真相/knowledge/story/chapters/chapter_025.md (4391 chars, ~2195 words)
+
+=== Chapter 026: 印刷机 ===
+  Saved: /home/pz03-b-003-pcl/code/story-studio/series/千行百业/variants/04_沉默的真相/knowledge/story/chapters/chapter_026.md (3102 chars, ~1551 words)
+
+=== Chapter 027: 石牌村复印机 ===
+  Saved: /home/pz03-b-003-pcl/code/story-studio/series/千行百业/variants/04_沉默的真相/knowledge/story/chapters/chapter_027.md (3717 chars, ~1858 words)
+
+=== Chapter 028: 内参 ===
+  Saved: /home/pz03-b-003-pcl/code/story-studio/series/千行百业/variants/04_沉默的真相/knowledge/story/chapters/chapter_028.md (4973 chars, ~2486 words)
+
+=== Chapter 029: 离职 ===
+  API error: HTTPSConnectionPool(host='llmapi.pcl.ac.cn', port=443): Read timed out. (read timeout=180)
+  FAILED
+
+=== Chapter 030: 安渡照相 ===
+  Saved: /home/pz03-b-003-pcl/code/story-studio/series/千行百业/variants/04_沉默的真相/knowledge/story/chapters/chapter_030.md (3099 chars, ~1549 words)
