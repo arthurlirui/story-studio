@@ -321,7 +321,18 @@ async def run_deai(orch, name: str, total: int) -> bool:
 
     ch_dir = Path(orch.cfg.knowledge_dir) / "story" / "chapters"
     out_dir = Path(orch.cfg.output_dir) / "polished"
+    report_dir = Path(orch.cfg.output_dir) / "deai_report"
     out_dir.mkdir(parents=True, exist_ok=True)
+    report_dir.mkdir(parents=True, exist_ok=True)
+
+    # AI 检测器 (可选, 静默失败)
+    detector = None
+    try:
+        from deai.detector import AIDetector
+        detector = AIDetector()
+        logger.info("    AI 检测器已就绪")
+    except Exception as e:
+        logger.info("    AI 检测器不可用 (%s), 跳过", e)
 
     # 加载润色模板
     prompt_path = PROJ_ROOT / "polish_prompt.txt"
@@ -377,7 +388,7 @@ async def run_deai(orch, name: str, total: int) -> bool:
 
         for attempt in range(3):
             try:
-                resp = await orch._client.chat(
+                resp = await orch.client.chat(
                     messages=[
                         {"role": "system", "content": SYSTEM},
                         {"role": "user", "content": user},
@@ -403,10 +414,38 @@ async def run_deai(orch, name: str, total: int) -> bool:
             (out_dir / f"chapter_{ch:03d}.md").write_text(output + "\n", "utf-8")
             pct = len(output) * 100 // orig_n if orig_n else 0
             logger.info("      ✅ ch%03d: %d→%d字 (%d%%)", ch, orig_n, len(output), pct)
+
+            # AI 检测评分 (腾讯云优先)
+            if detector:
+                try:
+                    comp = await detector.check_before_after_async(original, output)
+                    ai_before = comp["before"]["score"]
+                    ai_after = comp["after"]["score"]
+                    delta = comp["improvement"]
+                    tc_before = comp["before"].get("label", "?")
+                    tc_after = comp["after"].get("label", "?")
+                    logger.info("         AI得分: %.3f(%s)→%.3f(%s) %+.3f %s",
+                                ai_before, tc_before, ai_after, tc_after, delta,
+                                "⬆" if delta > 0 else "⬇")
+                except RuntimeError:
+                    pass
+                except Exception as e:
+                    logger.debug("         AI检测跳过: %s", e)
+
             ok += 1
         else:
             logger.error("      ❌ ch%03d: %s", ch, last_err or "未知")
             fail += 1
+
+    # 生成 AI 检测汇总报告 (如果检测器可用且有输出)
+    if detector and ok > 0:
+        try:
+            from deai.detector import generate_report
+            report = generate_report(detector, ch_dir, out_dir, name)
+            (report_dir / f"{name}_ai_report.md").write_text(report, "utf-8")
+            logger.info("    AI检测报告: %s/%s_ai_report.md", report_dir.name, name)
+        except Exception as e:
+            logger.warning("    生成AI报告失败: %s", e)
 
     logger.info("    === deai 完毕: ✅%d  ❌%d ===", ok, fail)
     return fail == 0
