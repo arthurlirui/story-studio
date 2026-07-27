@@ -3,9 +3,12 @@
 import asyncio, httpx, re, sys, shutil
 from pathlib import Path
 
-API_BASE = "https://llmapi.pcl.ac.cn/v1"
-API_KEY = "sk-dLcQBdtUNpw5vxrSP8HjlXfJGb8nP8uYlpSMpfKKTD8QfbbS"
-MODEL = "DeepSeek-V4-Pro"
+from config import load_config
+
+_cfg = load_config()
+API_BASE = _cfg.llm_base_url
+API_KEY = _cfg.llm_api_key
+MODEL = _cfg.main_model
 
 BASE = Path("/home/pz03-b-003-pcl/code/story-studio/series/轮回怪谈/variants/01_十日长安")
 CH = BASE / "knowledge" / "story" / "chapters"

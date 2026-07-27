@@ -36,7 +36,6 @@ characters/_Volcengine_API_error__None_.md
 # OpenClaw internal
 .openclaw/
 
-<<<<<<< HEAD
 # Secrets — never commit real settings or env files
 config/settings.yaml
 .env
@@ -46,11 +45,6 @@ jobs/
 
 # ZCode working files
 .zcode/
-=======
-# Secrets / local config
-.env
-config/settings.yaml
->>>>>>> 526e7f056fba7e56e975e5f2b965e16e7e911b5c
 *.db
 *.log
 

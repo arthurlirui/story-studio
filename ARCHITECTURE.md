@@ -1,13 +1,13 @@
 # 🎭 Story Studio — 小说剧本创作智能体团队
 
 > LLM API 驱动的多 Agent 协作创作系统  
-> 10 位 Agent · 自动修订质量门 · 可恢复运行 · 多 Job 并发 · REST API
+> **13 位** Agent · 去AI化引擎 · 联网搜索 MCP · 自动修订质量门 · 可恢复运行 · 多 Job 并发 · REST API
 
 ---
 
 ## 1. 概述
 
-**Story Studio** 是一个由 10 个 AI Agent 组成的智能创作团队，每个成员扮演小说/剧本创作链条中的一个专业角色。Agent 通过 OpenAI 兼容的 LLM API（默认 PCL LLM API）推理，支持 per-agent 模型路由、自动修订质量门、运行状态持久化、多 Job 并发和 REST API。
+**Story Studio** 是一个由 13 个 AI Agent 组成的智能创作团队，每个成员扮演小说/剧本创作链条中的一个专业角色。Agent 通过 OpenAI 兼容的 LLM API（默认 PCL LLM API）推理，支持 per-agent 模型路由、自动修订质量门、运行状态持久化、多 Job 并发和 REST API。
 
 ### 核心能力
 
@@ -77,7 +77,7 @@
 按角色分两层（可在 `settings.yaml` 的 `agent_models` 里逐个覆盖）：
 
 - **main tier**（走 `main_model`）：scene_writer / showrunner / world_architect / character_designer
-- **light tier**（走 `light_model`）：editor / continuity_keeper / literary_advisor / title_designer / hooker / climax_designer
+- **light tier**（走 `light_model`）：editor / continuity_keeper / literary_advisor / title_designer / hooker / climax_designer / innovator / topic_researcher / style_polisher
 
 ### 2.1 🎬 总策划 (Showrunner)
 
