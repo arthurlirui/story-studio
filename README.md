@@ -1,7 +1,6 @@
 # 🎭 Story Studio
 
-> LLM API 驱动的小说剧本创作智能体团队  
-> 10 位 AI Agent 协作创作 · 自动修订质量门 · 可恢复运行 · 多 Job 并发 · REST API
+> 11 位 AI Agent 协作创作 · 去AI化引擎 · 联网搜索 MCP · 自动修订质量门 · REST API
 
 ---
 
@@ -9,8 +8,8 @@
 
 ### 前置条件
 
-- Python ≥ 3.11
-- PCL LLM API（或任何 OpenAI 兼容端点）的 API Key
+- Python ≥ 3.12
+- LLM API Key（OpenAI 兼容端点，如 PCL / 火山方舟 Coding Plan）
 
 ### 安装
 
@@ -22,98 +21,112 @@ pip install -e ".[dev]"   # 含 pytest 开发依赖
 
 ### 配置密钥
 
-`config/settings.yaml` 已在 `.gitignore` 中，不会进版本库。两种方式注入密钥：
-
 ```bash
 # 方式 1：复制示例配置后填入
 cp config/settings.example.yaml config/settings.yaml
 # 编辑 settings.yaml，填入 llm_api_key
 
-# 方式 2：用环境变量（settings.yaml 的 llm_api_key 为空时自动 fallback）
+# 方式 2：用环境变量
 export LLM_API_KEY="sk-..."
 ```
 
 ### 启动
 
 ```bash
-# 交互模式
-python main.py
-
-# 一步创建项目
-python main.py --new "写一个发生在赛博朋克东京的侦探故事"
-
-# 提交后台 Job（异步生成整本小说）
-python main.py --submit "退役警察能看到的电子记忆" "电子记忆"
-
-# 查看所有 Job
-python main.py --jobs
-
-# 启动 REST API（可选）
-python -m api
-# 或：uvicorn api:app --reload
-```
-
-### 交互示例
-
-```
-🎬 /new 写一个发生在赛博朋克东京的侦探故事，主角是一个能"看到"电子设备记忆的退役警察
-→ 总策划分析需求 → 团队讨论 → 输出创作企划
-
-🎬 /next
-→ 世界观架构师构建世界观 → 角色设计师创建角色 → 总策划评审
-
-🎬 /next
-→ 总策划生成章节大纲 → 文学顾问提建议 → 标题/钩子/爽点设计师补充
-
-🎬 /next（或 /write 1）
-→ 场景编剧写第1章 → 编辑润色 → 连续性检查 → 总策划评审
-→ 若评审为 REVISE/REJECT，自动回灌评审意见重写（最多 max_rounds 轮）
-→ PASS 后文学顾问生成 ≤200 字章节摘要供后续章节参考
-
-🎬 /status
-→ 查看项目状态（含累计 token 成本）
+python main.py                              # 交互模式
+python main.py --new "写一个赛博朋克侦探故事"  # 一步创建
+python main.py --submit "需求" "项目名"      # 后台 Job
+python -m api                                # REST API
 ```
 
 ---
 
 ## 🤖 Agent 团队
 
-10 位 Agent，按角色分两层模型路由（可在 `settings.yaml` 的 `agent_models` 里逐个覆盖）：
+11 位 Agent + 1 个去AI化引擎，按角色分两层模型路由：
 
-| Agent | 角色 | 默认 tier | 职责 |
-|-------|------|-----------|------|
-| 🎬 **总策划** (Showrunner) | 主编 | main | 任务分配、质量评审、方向把控、终审 |
-| 🌍 **世界观架构师** (World Architect) | 设定师 | main | 世界观规则、时间线、地理文化 |
-| 👤 **角色设计师** (Character Designer) | 造人 | main | 角色档案、性格、成长弧线 |
-| 📖 **场景编剧** (Scene Writer) | 写手 | main | 章节创作、对话、场景描写（可并行多个） |
-| ✍️ **编辑** (Editor) | 文案 | light | 文风统一、语言润色、逻辑 |
-| 🎯 **文学顾问** (Literary Advisor) | 军师 | light | 叙事结构、技巧推荐、章节摘要生成 |
-| 🔍 **连续性检查员** (Continuity Keeper) | 纠错 | light | 时间/角色/世界观一致性 |
-| 🏷️ **标题设计师** (Title Designer) | 命名 | light | 书名、章节标题 |
-| 🪝 **钩子设计师** (Hooker) | 留客 | light | 章节钩子、悬念 |
-| 🔥 **爽点设计师** (Climax Designer) | 高潮 | light | 爽点节奏、高潮设计 |
+| Agent | 角色 | tier | 职责 |
+|-------|------|------|------|
+| 🎬 **总策划** (Showrunner) | 主编 | main | 任务分配、质量评审、方向把控 |
+| 🌍 **世界观架构师** | 设定师 | main | 世界观规则、时间线、地理文化 |
+| 👤 **角色设计师** | 造人 | main | 角色档案、性格、成长弧线、**语言指纹** |
+| 📖 **场景编剧** | 写手 | main | 章节创作、对话、**去AI感写作纪律** |
+| ✍️ **编辑** | 文案 | light | 文风统一、**8 维度去AI感检测** |
+| 🎯 **文学顾问** | 军师 | light | 叙事结构、技巧推荐、章节摘要 |
+| 🔍 **连续性检查员** | 纠错 | light | 时间/角色/世界观一致性 |
+| 🏷️ **标题设计师** | 命名 | light | 书名、章节标题（7 种番茄验证公式） |
+| 🪝 **钩子设计师** | 留客 | light | 12 种钩子类型、**反模板章尾设计** |
+| 🔥 **爽点设计师** | 高潮 | light | 8 大爽点原型、情绪循环调度 |
+| 💡 **创新顾问** | 亮点 | light | 题材辨识度优化、反同质化创新 |
 
 ---
 
 ## ✨ 核心特性
 
 ### 自动修订质量门
-每章写作跑完整流水线 scene → edit → continuity → review。若 Showrunner 评审为 REVISE/REJECT，自动把评审意见回灌给场景编剧重写，最多 `max_rounds` 轮（默认 3）。PASS 或耗尽轮次后交付（耗尽时在标题标 ⚠️ 警告但不卡死流程）。终审同理：非 PASS 循环 final-edit，耗尽时在 `_final.md` 头部插警告但仍交付。
+每章走 **scene → edit → continuity → review** 流水线，Showrunner 评审为 REVISE/REJECT 时自动回灌重写（最多 3 轮），PASS 或耗尽后交付。
 
 ### 可恢复运行
-`orchestrator_state.py` 把 phase / current_chapter / total_chapters / project_name / 累计成本持久化到 `{knowledge_dir}/run_state.json`。每次 phase 转换和每章写完都保存。崩溃重启后 `/next` 能从盘上产物推断当前阶段，不丢进度。
+`RunState` JSON 持久化 phase / chapter / 成本，崩溃重启后自动推断当前阶段，不丢进度。
 
-### 大模型资源利用率
-- **Per-agent 模型路由**：meta 类任务（标题/简介/封面 brief）和 light tier agent 走 `light_model`，核心创作走 `main_model`。
-- **RunCost 核算**：每次 `think` 的 token 用量按 model 分桶聚合，`/status` 暴露累计 token 和调用次数。
-- **连接池**：`LLMClient` 复用 `httpx.AsyncClient`，避免每次 chat 新建 TCP 连接。
-- **章节摘要替代首段**：每章 PASS 后用文学顾问生成 ≤200 字摘要，`build_context` 优先用摘要，无摘要回退首段；总长超 `max_context_chars`（默认 60000）时按章节号倒序裁剪最旧摘要。
+### 大模型资源优化
+- Per-agent 模型路由（meta 任务走 `light_model`，核心创作走 `main_model`）
+- `RunCost` 按 model 分桶聚合 token 用量
+- 连接池复用 `httpx.AsyncClient`
+- 章节摘要替代首段（≤200 字），总长超预算时按章节倒序裁剪
 
-### 多 Job 并发 + REST API
-`jobs.py` 的 `JobRunner` 管理多个并发小说任务，每任务独立 `knowledge/` + `output/`，`asyncio.Semaphore` 限并发，index 持久化到 `jobs/index.json`。`api.py`（FastAPI）暴露 REST 端点供外部驱动。
+### 完稿交付
+润色版 `_final.md`、清洗版 `_final.txt`、简介 `_synopsis.txt`、封面 brief JSON + 英文提示词
 
-### 完稿交付物
-`phase_complete` 末尾产出：润色版 `_final.md`、清洗版 `_final.txt`（去 markdown、带扉页和章节标题）、≤500 字内容简介 `_synopsis.txt`、封面 brief JSON + 纯英文提示词。
+---
+
+## 🧠 去AI感 (deai)
+
+人味 = **不确定 + 不均匀 + 不完美 + 有语言指纹**，三层体系对抗 AI 文的"太确定、太均匀、太完整、千人一腔"：
+
+### 层一：写作内化（生成时预防）
+`scene_writer.py` 内置 **7 条最高写作纪律**：
+- AI 禁忌词限量表（不禁/顿时/仿佛/宛如 等，每千字 ≤1 次）
+- 句式破局（句长爆发度：每 300 字至少 1 个 ≤5 字短句）
+- 不确定性与人味毛边（禁场景末尾升华，允许闲笔和"没想明白"）
+- 具体细节配额（每章 ≥3 个"无用但具体"的细节）
+- 情绪去标签（禁直接命名情绪，全转动作+生理）
+- 对话人味（30% 答非所问，吵架抢话叠话）
+- 结构反模板（允许一句话成段，钩子形式轮换）
+
+### 层二：编辑审核（生成后检查）
+`editor.py` 内置 **8 维度检测清单**（🔴/🟡 分级 + 量化阈值）：词汇痕迹 → 句式均匀 → 段落模板 → 过度升华 → 细节抽象 → 情绪标签 → 对话失真 → 网文套路。附扩充动作替代速查表（10 种情绪 × 多种生理反应）。
+
+### 层三：引擎工具（批量后处理）
+独立 `deai/` 模块：24 类 AI 写作痕迹检测规则（基于 Humanizer-zh），四层流水线：正则扫描 → 规则确定性重写（删除/弱化/同义词变异/段落碎片化/长句拆分）→ LLM 重写兜底 → 反 AI 审计 + 0-50 质量评分。
+
+---
+
+## 🔍 联网搜索 MCP
+
+项目集成了火山引擎官方 `mcp-server-askecho-search-infinity`，通过 API Key 鉴权接入豆包搜索：
+
+- **工具名**：`mcp__doubao-search__web_search`
+- **功能**：中文网页/图片搜索，支持时间范围过滤、权威等级筛选
+- **配置**：`~/.zcode/cli/config.json` → `mcp.servers.doubao-search`
+
+---
+
+## 🏗️ 网文方法论
+
+基于番茄小说平台 + 签约作者经验的方法论体系（commit `de71915`），已注入 11 个 Agent 的 system prompt：
+
+| 方法论 | 注入位置 | 核心规则 |
+|--------|---------|---------|
+| 黄金 300 字开篇 | SceneWriter | 3 秒决定去留，300 字内无冲突 = 80% 流失 |
+| 对话 60% 黄金比例 | SceneWriter, Editor | 对话占比 60%，旁白 30%，心理 ≤10% |
+| 手机排版规范 | SceneWriter, Editor | 每段 1-2 行，段落短但句长有爆发度 |
+| 章尾钩子轮换 | Hooker, SceneWriter | 12 种类型 + 4 种黄金模板，全知切换 ≤2 章连续 |
+| 爽点密度 500-800 字 | ClimaxDesigner | 节奏铁律：连续 1500 字无收获=失血 |
+| 开篇三不做 | SceneWriter | 不铺垫背景、不写天气风景、不信息轰炸 |
+| 语言指纹模板 | CharacterDesigner | 口癖/句式习惯/禁词，农民和教授不能一个腔调 |
+| 平台数据指标 | Showrunner | 点击率/完读率>15%/追更率>30%/书架比>1:10 |
+| 收益模型 | Showrunner | 广告分成 55%、全勤奖、短剧改编最高 300 万 |
 
 ---
 
@@ -123,7 +136,7 @@ python -m api
 | 命令 | 说明 |
 |------|------|
 | `/new <需求>` | 开始新项目 |
-| `/next` | 进入下一阶段（自动从盘上推断当前阶段） |
+| `/next` | 进入下一阶段 |
 | `/write [章节号]` | 写指定章节 |
 | `/review [章节号]` | 审阅章节 |
 | `/revise <章节号> <指令>` | 修订章节 |
@@ -148,30 +161,17 @@ python -m api
 | 命令 | 说明 |
 |------|------|
 | `/status` | 系统状态（含累计 token 成本） |
-| `/jobs` | 列出所有后台 Job |
 | `/help` | 帮助 |
-| `/exit` `/quit` | 退出 |
-
-### CLI Flags
-| Flag | 说明 |
-|------|------|
-| `--new "<需求>"` | 一步创建新项目 |
-| `--status` | 查看项目状态 |
-| `--submit "<需求>" [项目名]` | 提交后台 Job |
-| `--jobs` | 列出所有后台 Job |
-| `--job <id>` | 查看单个 Job 状态 |
-| `--job-cancel <id>` | 取消 Job |
 
 ### REST API
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/novels` | 提交新小说 Job |
-| GET | `/novels` | 列出所有 Job |
-| GET | `/novels/{id}` | 查看 Job 状态 |
-| GET | `/novels/{id}/chapters/{n}` | 读取某章节正文 |
+| GET  | `/novels` | 列出所有 Job |
+| GET  | `/novels/{id}` | 查看 Job 状态 |
+| GET  | `/novels/{id}/chapters/{n}` | 读取章节正文 |
 | POST | `/novels/{id}/revise` | 重写指定章节 |
-| DELETE | `/novels/{id}` | 取消/删除 Job |
-| GET | `/health` | 健康检查 |
+| GET  | `/health` | 健康检查 |
 
 ---
 
@@ -179,58 +179,72 @@ python -m api
 
 ```
 story-studio/
-├── agents/               # 🧠 Agent 模块
-│   ├── base.py           #    Agent 基类（last_usage 拷贝）
-│   ├── llm_client.py     #    LLM API 客户端（连接池 + 超时重试 + usage 提取）
-│   ├── knowledge.py      #    知识库管理器（原子写 + 章节摘要 + 预算裁剪）
+├── agents/               # 🧠 11 个 Agent 模块 + 基础设施
+│   ├── base.py           #    Agent 基类
+│   ├── llm_client.py     #    LLM API 客户端（连接池 + 超时重试）
+│   ├── knowledge.py      #    知识库（双层级：系列 + 变体）
 │   ├── text_cleaner.py   #    正文清洗（md→txt）
 │   ├── showrunner.py     #    🎬 总策划
 │   ├── world_architect.py #   🌍 世界观架构师
-│   ├── character_designer.py # 👤 角色设计师
-│   ├── scene_writer.py   #    📖 场景编剧
-│   ├── editor.py         #    ✍️ 编辑
+│   ├── character_designer.py # 👤 角色设计师（语言指纹）
+│   ├── scene_writer.py   #    📖 场景编剧（去AI感 7 条纪律）
+│   ├── editor.py         #    ✍️ 编辑（去AI感 8 维度检测）
 │   ├── literary_advisor.py #  🎯 文学顾问
 │   ├── continuity.py     #    🔍 连续性检查员
 │   ├── title_designer.py #    🏷️ 标题设计师
-│   ├── hooker.py         #    🪝 钩子设计师
-│   └── climax_designer.py #   🔥 爽点设计师
+│   ├── hooker.py         #    🪝 钩子设计师（反模板）
+│   ├── climax_designer.py #   🔥 爽点设计师
+│   ├── innovator.py      #    💡 创新顾问
+│   └── style_polisher.py #    🎨 风格润色器（LoRA 莫言风格）
+├── deai/                 # 🧹 去AI化引擎
+│   ├── __init__.py       #    双轨说明
+│   ├── engine.py         #    DeaiEngine（四层流水线）
+│   └── rules.py          #    24 类 AI 痕迹检测规则
+├── series/               # 📚 系列工程（10 个创作宇宙）
+│   ├── 千行百业/          #    现代职业百态
+│   ├── 哥伦布计划/        #    西方热门题材短篇
+│   ├── 重生穿越/          #    古代逆袭史诗
+│   ├── 破镜之后/          #    女频长篇
+│   ├── 不被定义她的主场/   #    女本位长篇
+│   └── ...               #    知乎短篇 / 抖音创作 / 轮回怪谈 等
+├── skills/               # 🎯 11 个可复用技能包
+│   ├── ancient-social-drama/
+│   ├── ancient-tragic-romance/
+│   ├── chapter-hooks/
+│   ├── climax-design/
+│   ├── moyan-style/       #   莫言风格（含 LoRA）
+│   ├── murakami-style/    #   村上春树风格
+│   └── ...
+├── templates/            # 📋 封面设计模板
+├── tools/                # 🔧 ComfyUI 封面生成
 ├── config/               # ⚙️ 配置
-│   ├── __init__.py       #    StudioConfig + load_config（env fallback）
-│   ├── settings.yaml     #    本地配置（gitignored，含密钥）
-│   └── settings.example.yaml  # 示例配置
-├── knowledge/            # 📚 知识库（gitignored）
+├── knowledge/            # 📚 运行时知识库（gitignored）
 ├── output/               # 📦 成品输出（gitignored）
-├── jobs/                 # 📋 Job 工作目录（gitignored）
-├── orchestrator.py       # 🎭 编排器（5 phase + 自动修订 + 状态持久化）
+├── orchestrator.py       # 🎭 编排器（5 phase + 自动修订）
 ├── orchestrator_state.py # 💾 RunState 持久化
-├── jobs.py               # 📋 JobRunner（多并发小说任务）
+├── jobs.py               # 📋 JobRunner（多并发）
 ├── api.py                # 🌐 FastAPI REST API
-├── main.py               # 🚀 CLI 入口（交互 + flags）
-├── run_yubi.py           # 📖 玉璧之战专用 runner
-├── pyproject.toml        # 📦 项目元数据 + 依赖 + pytest 配置
+├── main.py               # 🚀 CLI 入口
+├── polish_prompt.txt     # ✨ 独立润色 prompt（含去AI感第 12 条）
+├── pyproject.toml        # 📦 项目元数据
 └── ARCHITECTURE.md       # 📐 架构设计
 ```
 
 ---
 
-## ⚙️ 配置
+## 📚 Series Projects
 
-编辑 `config/settings.yaml`（从 `settings.example.yaml` 复制）：
+### 《千行百业》
+现代真实职业图景，职场百态与时代烟火。10 部职业题材长篇（急诊科医生、机场管制员、手艺传承人……），每部独立 `series_bible`。
 
-```yaml
-backend: "llm"
-llm_base_url: "https://llmapi.pcl.ac.cn/v1"
-llm_api_key: ""           # 留空则从 LLM_API_KEY 环境变量取
-main_model: "DeepSeek-V4-Pro"
-light_model: "DeepSeek-V4-Pro"
-max_rounds: 3             # 每章自动修订上限
-scene_writers: 3          # 并行编剧数量
-max_context_chars: 60000  # build_context 字符预算
+### 《哥伦布计划》
+西方热门题材 × 短篇核心梗（狼人/吸血鬼/Mafia/西幻），强钩子+强情绪+快节奏。世界观圣经 v2.0，20 个变体短篇。
 
-# 可选：per-agent 模型覆盖
-agent_models:
-  editor: "deepseek-r1-32b"
-```
+### 《重生穿越》
+"现代失败者穿越古代逆袭"的故事宇宙。11 部互有关联的长篇，宿命论统一框架 + 山冈庄八式半文白风格。
+
+### 《破镜之后》 & 《不被定义她的主场》
+女频长篇批量创作——"破镜"系列从伤害后重逢切入，"主场"系列为女本位觉醒叙事。
 
 ---
 
@@ -241,39 +255,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-覆盖：原子写、连续性哨兵守卫、LLM 客户端（超时重试 / usage / 429 退避）、REPL 鲁棒性、RunState 持久化、自动修订循环、终审硬门、phase 推断、per-agent 模型路由、RunCost 核算、章节摘要 + 预算裁剪、JobRunner、FastAPI API、配置加载。
-
----
-
-## 📚 Series Projects
-
-### 《破镜之后》
-
-女频长篇批量创作系列工程：
-
-```bash
-python3 series/破镜之后/tools/new_variant.py --title "离婚第五年，前夫跪在雨里求我回头" --mode modern --ending no_forgiveness --wound "误会背叛+生死时刻缺席" --years 5
-```
-
-### 《不被定义她的主场》
-
-女本位长篇批量创作系列工程：
-
-```bash
-python3 series/不被定义她的主场/tools/new_variant.py --title "女钳工她不认命" --mode era --core "六零年代女钳工打破性别工种偏见，成为大国工匠"
-```
-
----
-
-## 🧩 Skills / Tools
-
-### 书籍封面生成
-
-```bash
-python3 tools/book_cover_comfy.py --title "关河裂" --subtitle "北朝双雄史诗" --author "Arthur 著" --novel-file "../关河裂_总结.txt" --dry-run
-```
-
-详见 `skills/book-cover-generation/SKILL.md`。
+覆盖：agent 模块、自动修订循环、RunState 持久化、RunCost 核算、章节摘要 + 预算裁剪、文本清洗、LLM 客户端、JobRunner、REST API 等共 330+ 用例。
 
 ---
 

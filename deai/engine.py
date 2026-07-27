@@ -213,12 +213,12 @@ class DeaiEngine:
         try:
             response = await self.client.think(prompt)
             if response and not response.startswith("ERROR"):
-                # 用LLM输出替换对应段落
-                for i, seg in enumerate(rewrite_segments[:5]):
+                # 用 LLM 响应中提取的段落替换对应的原文段
+                rewritten_segs = [s.strip() for s in response.split("\n---\n") if s.strip()]
+                for i, seg in enumerate(rewrite_segments[: len(rewritten_segs)]):
                     if seg in text:
-                        # 简单策略：找到并替换第一个匹配
-                        text = text.replace(seg, f"[REWRITTEN:{i}]")
-                return text, len(rewrite_segments[:5])
+                        text = text.replace(seg, rewritten_segs[i])
+                return text, len(rewritten_segs)
         except Exception:
             pass
 
