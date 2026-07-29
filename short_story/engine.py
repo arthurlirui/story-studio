@@ -95,6 +95,8 @@ class QualityChecker:
 
 # ── Pipeline ──
 class ShortStoryPipeline:
+    _POLISH_TMPL: str | None = None  # 类级别缓存 polish_prompt.txt
+
     def __init__(self, llm_client, skill_store: SkillConfigStore,
                  knowledge_dir: Path, output_dir: Path):
         self.llm = llm_client; self.skills = skill_store
@@ -103,18 +105,40 @@ class ShortStoryPipeline:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.checker = QualityChecker()
 
+    @staticmethod
+    def _get_polish_template() -> str:
+        """懒加载 polish_prompt.txt（类级别缓存，只读一次）"""
+        if ShortStoryPipeline._POLISH_TMPL is not None:
+            return ShortStoryPipeline._POLISH_TMPL
+        candidates = [
+            Path(__file__).parent.parent / "polish_prompt.txt",
+            Path.home() / "code/story-studio/polish_prompt.txt",
+        ]
+        for p in candidates:
+            if p.exists():
+                tmpl = p.read_text("utf-8").strip()
+                logger.info("已加载 polish_prompt.txt (%d字) from %s", len(tmpl), p)
+                ShortStoryPipeline._POLISH_TMPL = tmpl
+                return tmpl
+        logger.warning("polish_prompt.txt 不存在，deai 将走裸润色")
+        ShortStoryPipeline._POLISH_TMPL = "{section}"
+        return ShortStoryPipeline._POLISH_TMPL
+
     async def generate(self, genre: str, prompt: str,
                        word_count: int = 15000,
-                       worldview_overrides: dict | None = None) -> StoryResult:
+                       worldview_overrides: dict | None = None,
+                       enable_deai: bool = True) -> StoryResult:
         t0 = time.time()
         skill = self.skills.load(genre)
         pov = skill.get("default_pov","first_person")
         sec_target = skill.get("section_target",1500)
-        logger.info("生成短故事: genre=%s words=%d",genre,word_count)
+        logger.info("生成短故事: genre=%s words=%d deai=%s",genre,word_count,enable_deai)
         plan = await self._phase_plan(genre,prompt,word_count,pov,sec_target,skill,worldview_overrides or {})
         (self.output_dir/"story_plan.json").write_text(json.dumps(plan.to_dict(),ensure_ascii=False,indent=2),encoding="utf-8")
         logger.info("策划: title=%s sections=%d",plan.title,len(plan.sections))
         result = await self._phase_write(plan,skill)
+        if enable_deai:
+            result = await self._phase_deai(result, plan)
         result.generation_time_s = time.time()-t0
         (self.output_dir/"story_final.md").write_text(result.full_text,encoding="utf-8")
         logger.info("完成: %d words %.1fs",result.total_words,result.generation_time_s)
@@ -249,3 +273,94 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
             text = "\n".join(lines[1:]).strip()
         wc = len(text.replace("\n","").replace(" ",""))
         return SectionOutput(section=sec_num, title=title, text=text, word_count=wc)
+
+    # ── Phase 3: DeAI 去 AI 感润色 ──
+    async def _phase_deai(self, result: StoryResult, plan: StoryPlan) -> StoryResult:
+        """逐节去 AI 感润色 + 全文终润
+
+        复用 run_all.py 的 deai 模块逻辑：
+        - polish_prompt.txt 作为润色模板
+        - 每节 3 次重试 + 429 指数退避
+        - 输出替换到 result.sections 和 result.full_text
+        """
+        logger.info("=== deai 去AI感润色: %s ===", plan.title)
+        polish_tmpl = ShortStoryPipeline._get_polish_template()
+
+        SYSTEM = (
+            "你是中国顶级网络小说编辑，擅长将好故事提升为精妙的网文作品。"
+            "文字冷峻克制有张力，用细节和节奏感抓住读者。"
+            "精通历史、悬疑、玄幻、言情、军事、医疗等专业题材。"
+        )
+
+        polished_sections = []
+        full_parts = [f"# {plan.title}\n\n> {plan.synopsis}\n"]
+        ok = fail = 0
+
+        for so in result.sections:
+            original = so.text
+            orig_n = len(original)
+            if orig_n < 100:
+                logger.warning("  第%d节 太短(%d字), 跳过", so.section, orig_n)
+                polished_sections.append(so)
+                full_parts.append(original)
+                full_parts.append("")
+                continue
+
+            # 构建 prompt：用润色模板包裹本节正文
+            user = polish_tmpl.replace("{section}", original) if "{section}" in polish_tmpl else polish_tmpl.replace("{chapter}", original)
+            logger.info("  第%d节 (%d字)...", so.section, orig_n)
+
+            output = None
+            last_err = None
+
+            for attempt in range(3):
+                try:
+                    resp = await self.llm.chat(
+                        messages=[
+                            {"role": "system", "content": SYSTEM},
+                            {"role": "user", "content": user},
+                        ],
+                        temperature=0.82,
+                        max_tokens=6000,
+                    )
+                    text = resp.strip()
+                    if text and len(text) > 50:
+                        output = text
+                        break
+                    last_err = f"输出太短({len(text)}字)"
+                except Exception as e:
+                    last_err = str(e)
+                    if "429" in str(e) or "Rate" in str(e):
+                        wait = 5 * (2 ** attempt)
+                        logger.warning("    429 限流, 等%ds...", wait)
+                        await asyncio.sleep(wait)
+                    else:
+                        await asyncio.sleep(2)
+
+            if output:
+                pct = len(output) * 100 // orig_n if orig_n else 0
+                logger.info("    ✅ 第%d节: %d→%d字 (%d%%)", so.section, orig_n, len(output), pct)
+                polished = SectionOutput(
+                    section=so.section, title=so.title,
+                    text=output, word_count=len(output.replace("\n","").replace(" ",""))
+                )
+                polished_sections.append(polished)
+                full_parts.append(output)
+                full_parts.append("")
+                ok += 1
+            else:
+                logger.error("    ❌ 第%d节: %s, 保留原文", so.section, last_err or "未知")
+                polished_sections.append(so)
+                full_parts.append(original)
+                full_parts.append("")
+                fail += 1
+
+        full_text = "\n".join(full_parts).strip()
+        total_words = len(full_text.replace("\n","").replace(" ",""))
+        logger.info("  === deai 完毕: ✅%d  ❌%d | 总字数: %d→%d ===", ok, fail, result.total_words, total_words)
+
+        return StoryResult(
+            title=result.title, synopsis=result.synopsis,
+            full_text=full_text, sections=polished_sections,
+            total_words=total_words
+        )

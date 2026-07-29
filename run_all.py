@@ -321,23 +321,37 @@ async def run_deai(orch, name: str, total: int) -> bool:
 
     ch_dir = Path(orch.cfg.knowledge_dir) / "story" / "chapters"
     out_dir = Path(orch.cfg.output_dir) / "polished"
+    report_dir = Path(orch.cfg.output_dir) / "deai_report"
     out_dir.mkdir(parents=True, exist_ok=True)
+    report_dir.mkdir(parents=True, exist_ok=True)
 
-    # 加载润色模板
-    prompt_path = PROJ_ROOT / "polish_prompt.txt"
-    if prompt_path.exists():
-        POLISH_TMPL = prompt_path.read_text("utf-8").strip()
+    # AI 检测器 (跳过——离线环境，HF 不可达)
+    detector = None
+    logger.info("    AI 检测器已跳过（离线环境）")
+
+    # 加载润色模板（优先 v4 → v3 → v2 → v1）
+    prompt_path_v4 = PROJ_ROOT / "polish_prompt_v4.txt"
+    prompt_path_v3 = PROJ_ROOT / "polish_prompt_v3.txt"
+    prompt_path_v2 = PROJ_ROOT / "polish_prompt_v2.txt"
+    prompt_path_v1 = PROJ_ROOT / "polish_prompt.txt"
+    if prompt_path_v4.exists():
+        POLISH_TMPL = prompt_path_v4.read_text("utf-8").strip()
+        logger.info("    已加载 polish_prompt_v4.txt (%d字, 含7 Gate + oh-story + fanqie番茄平台)", len(POLISH_TMPL))
+    elif prompt_path_v3.exists():
+        POLISH_TMPL = prompt_path_v3.read_text("utf-8").strip()
+        logger.info("    已加载 polish_prompt_v3.txt (%d字, 含7 Gate + oh-story深度限知)", len(POLISH_TMPL))
+    elif prompt_path_v2.exists():
+        POLISH_TMPL = prompt_path_v2.read_text("utf-8").strip()
+        logger.info("    已加载 polish_prompt_v2.txt (%d字, 含24类AI痕迹检测)", len(POLISH_TMPL))
+    elif prompt_path_v1.exists():
+        POLISH_TMPL = prompt_path_v1.read_text("utf-8").strip()
         logger.info("    已加载 polish_prompt.txt (%d字)", len(POLISH_TMPL))
     else:
         POLISH_TMPL = "{chapter}"
         logger.warning("    polish_prompt.txt 不存在，走裸润色")
 
-    # 系统 prompt
-    SYSTEM = (
-        "你是中国顶级网络小说编辑，擅长将好故事提升为精妙的网文作品。"
-        "文字冷峻克制有张力，用细节和节奏感抓住读者。"
-        "精通历史、悬疑、玄幻、言情、军事、医疗等专业题材。"
-    )
+    # 系统 prompt — 直接用 v3 作为 system message
+    SYSTEM = POLISH_TMPL
 
     # 统计完成章
     finished = set()
@@ -369,7 +383,7 @@ async def run_deai(orch, name: str, total: int) -> bool:
             continue
 
         # 构建 prompt
-        user = POLISH_TMPL.replace("{chapter}", original)
+        user = f"以下是待润色的章节正文，请直接输出润色后的纯净草内容（不要输出任何思考过程、分析、标注）：\n\n{original}"
         logger.info("    ch%03d (%d字)...", ch, orig_n)
 
         output = None
@@ -377,13 +391,13 @@ async def run_deai(orch, name: str, total: int) -> bool:
 
         for attempt in range(3):
             try:
-                resp = await orch._client.chat(
+                resp = await orch.client.chat(
                     messages=[
                         {"role": "system", "content": SYSTEM},
                         {"role": "user", "content": user},
                     ],
                     temperature=0.82,
-                    max_tokens=6000,
+                    max_tokens=12000,
                 )
                 text = resp.strip()
                 if text and len(text) > 200:
@@ -400,13 +414,47 @@ async def run_deai(orch, name: str, total: int) -> bool:
                     await asyncio.sleep(2)
 
         if output:
-            (out_dir / f"chapter_{ch:03d}.md").write_text(output + "\n", "utf-8")
-            pct = len(output) * 100 // orig_n if orig_n else 0
-            logger.info("      ✅ ch%03d: %d→%d字 (%d%%)", ch, orig_n, len(output), pct)
+            # 清理多余空行：最多保留一个空行（即两个连续换行 -> 一个换行）
+            cleaned = output.strip()
+            while "\n\n\n" in cleaned:
+                cleaned = cleaned.replace("\n\n\n", "\n\n")
+            (out_dir / f"chapter_{ch:03d}.md").write_text(cleaned + "\n", "utf-8")
+            # 同时输出 .txt 版本
+            (out_dir / f"chapter_{ch:03d}.txt").write_text(cleaned + "\n", "utf-8")
+            pct = len(cleaned) * 100 // orig_n if orig_n else 0
+            logger.info("      ✅ ch%03d: %d→%d字 (%d%%)", ch, orig_n, len(cleaned), pct)
+
+            # AI 检测评分 (腾讯云优先)
+            if detector:
+                try:
+                    comp = await detector.check_before_after_async(original, output)
+                    ai_before = comp["before"]["score"]
+                    ai_after = comp["after"]["score"]
+                    delta = comp["improvement"]
+                    tc_before = comp["before"].get("label", "?")
+                    tc_after = comp["after"].get("label", "?")
+                    logger.info("         AI得分: %.3f(%s)→%.3f(%s) %+.3f %s",
+                                ai_before, tc_before, ai_after, tc_after, delta,
+                                "⬆" if delta > 0 else "⬇")
+                except RuntimeError:
+                    pass
+                except Exception as e:
+                    logger.debug("         AI检测跳过: %s", e)
+
             ok += 1
         else:
             logger.error("      ❌ ch%03d: %s", ch, last_err or "未知")
             fail += 1
+
+    # 生成 AI 检测汇总报告 (如果检测器可用且有输出)
+    if detector and ok > 0:
+        try:
+            from deai.detector import generate_report
+            report = generate_report(detector, ch_dir, out_dir, name)
+            (report_dir / f"{name}_ai_report.md").write_text(report, "utf-8")
+            logger.info("    AI检测报告: %s/%s_ai_report.md", report_dir.name, name)
+        except Exception as e:
+            logger.warning("    生成AI报告失败: %s", e)
 
     logger.info("    === deai 完毕: ✅%d  ❌%d ===", ok, fail)
     return fail == 0

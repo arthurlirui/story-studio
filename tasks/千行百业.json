@@ -1,0 +1,22 @@
+{
+  "pipeline": "qianhang",
+  "display_name": "千行百业系列",
+  "base_dir": "series/千行百业/variants",
+  "variant_dirs": [
+    "01_急诊室没有如果",
+    "02_白事先生",
+    "03_雷雨请绕飞",
+    "04_沉默的真相",
+    "05_为恶人辩护",
+    "06_第七个来访者",
+    "07_守艺人",
+    "08_逆行者",
+    "09_三万英尺",
+    "10_拆不掉的城"
+  ],
+  "stages": [
+    {"name": "deai", "enabled": true}
+  ],
+  "total_chapters": 30,
+  "batch_size": 1
+}
