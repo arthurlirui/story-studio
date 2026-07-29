@@ -5,6 +5,7 @@ from agents.base import Agent
 from agents.showrunner import Showrunner
 from agents.world_architect import WorldArchitect
 from agents.character_designer import CharacterDesigner
+from agents.character_psychologist import CharacterPsychologist
 from agents.scene_writer import SceneWriter
 from agents.editor import Editor
 from agents.literary_advisor import LiteraryAdvisor
@@ -32,6 +33,7 @@ __all__ = [
     "Showrunner",
     "WorldArchitect",
     "CharacterDesigner",
+    "CharacterPsychologist",
     "SceneWriter",
     "Editor",
     "LiteraryAdvisor",

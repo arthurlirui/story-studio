@@ -18,7 +18,7 @@ from typing import Any
 
 from config import StudioConfig, load_config
 from agents import (
-    Showrunner, WorldArchitect, CharacterDesigner,
+    Showrunner, WorldArchitect, CharacterDesigner, CharacterPsychologist,
     SceneWriter, Editor, LiteraryAdvisor, ContinuityKeeper,
     TitleDesigner, Hooker, ClimaxDesigner,
     KnowledgeStore,
@@ -188,6 +188,10 @@ class StoryOrchestrator:
             "角色设计师", "Character Designer", "创建角色档案",
             self.client, model=self._agent_model("character_designer", "main"), temperature=0.8,
         )
+        self.character_psychologist = CharacterPsychologist(
+            "人物心理学家", "Character Psychologist", "深度心理建模+外貌习惯+语言指纹",
+            self.client, model=self._agent_model("character_psychologist", "main"), temperature=0.7,
+        )
         # Multiple Scene Writers for parallel chapter writing (at least 1)
         self.scene_writers: list[SceneWriter] = []
         writer_count = max(1, self.cfg.scene_writers)
@@ -228,6 +232,7 @@ class StoryOrchestrator:
             "showrunner": self.showrunner,
             "world_architect": self.world_architect,
             "character_designer": self.character_designer,
+            "character_psychologist": self.character_psychologist,
             "editor": self.editor,
             "literary_advisor": self.literary_advisor,
             "continuity_keeper": self.continuity_keeper,
@@ -546,6 +551,16 @@ class StoryOrchestrator:
         self._log("character_designer", characters)
         # Save individual characters
         self._save_characters(characters)
+
+        # Character psychology deep dive
+        psych = await self.character_psychologist.think(
+            "请对以上角色进行深度心理建模。将世界观设定 + CharacterDesigner 已产出的角色档案作为输入，"
+            "产出每个核心角色的心理行为档案（MBTI/九型/大五/依恋/防御机制/外貌细节/习惯动作库/语言指纹/"
+            "思维模式/人际面具/情绪光谱）。配角给简化版即可。最后输出角色关系动力学矩阵。",
+            context + f"\n\n## 世界观设定\n{world_setting[:2000]}\n\n## 角色档案\n{characters[:4000]}",
+        )
+        self._log("character_psychologist", psych)
+        self.knowledge.save_world("character_psychology", psych)
 
         # Showrunner review
         review = await self.showrunner.review(
