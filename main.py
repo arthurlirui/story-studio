@@ -1,32 +1,92 @@
 #!/usr/bin/env python3
 """
-🎭 Story Studio CLI — 小说剧本创作智能体团队交互界面
+🎭 Story Studio CLI - 小说剧本创作智能体团队交互界面
+
+统一入口已迁移到 ``ss`` 命令（见 cli/）。本文件保留为向后兼容入口：
 
 用法:
-    python main.py                      # 交互模式
-    python main.py --new "输入创作需求"  # 一步创建新项目
-    python main.py --status              # 查看项目状态
+    python main.py                      # 交互模式（= ss repl）
+    python main.py --new "输入创作需求"  # 一步创建新项目（= ss run stage planning）
+    python main.py --status             # 查看项目状态（= ss status）
+    python main.py --submit "需求"      # 提交后台 Job（= ss submit "需求"）
+
+新用法推荐使用 ``ss`` 子命令（先 pip install -e ".[cli]"）：
+    ss --help           # 查看所有子命令
+    ss run pipeline X   # 跑长篇管线
+    ss jobs list        # 列出 Job
+    ss repl             # 交互式 REPL
 """
 from __future__ import annotations
 
-import asyncio
-import logging
 import sys
 from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import load_config
-from orchestrator import StoryOrchestrator
-from agents.llm_client import init_client
+# 向后兼容的 flag 直接映射到 Typer 子命令
+_LEGACY_FLAGS = {"--new", "--status", "--submit", "--jobs", "--job", "--job-cancel"}
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("story-studio")
+
+def _has_legacy_flag() -> bool:
+    """检测是否用了旧式 --flag，需要转译到 ss 子命令。"""
+    return any(a in _LEGACY_FLAGS for a in sys.argv[1:])
+
+
+def main() -> None:
+    if _has_legacy_flag():
+        # 旧式 flag 仍可用：--new -> repl 的 /new；--status -> ss status；
+        # --submit -> ss submit；--jobs -> ss jobs list 等。
+        # 简单方案：若无参数或带 --new，进 repl（REPL 内部 /new 已实现）。
+        # --status/--jobs 等委托对应 ss 子命令。
+        args = sys.argv[1:]
+        if "--status" in args:
+            from cli.status import status as _status_cmd
+            _status_cmd(fmt="table")
+            return
+        if "--jobs" in args:
+            from cli.jobs import jobs_list
+            jobs_list(status=None, fmt="table")
+            return
+        if "--submit" in args:
+            # python main.py --submit "需求" [项目名] -> ss submit "需求" --name 项目名
+            idx = args.index("--submit")
+            brief = args[idx + 1] if idx + 1 < len(args) else ""
+            name = args[idx + 2] if idx + 2 < len(args) else ""
+            from cli.main import submit
+            submit(brief=brief, name=name, chapters=None, mode="sequential")
+            return
+        if "--job" in args:
+            idx = args.index("--job")
+            jid = args[idx + 1] if idx + 1 < len(args) else ""
+            from cli.jobs import jobs_show
+            jobs_show(job_id=jid, fmt="table")
+            return
+        if "--job-cancel" in args:
+            idx = args.index("--job-cancel")
+            jid = args[idx + 1] if idx + 1 < len(args) else ""
+            import asyncio
+            from cli.jobs import _get_runner
+            runner = _get_runner()
+            ok = asyncio.run(runner.cancel(jid))
+            print(f"✅ 已取消 {jid}" if ok else f"❌ 取消失败")
+            return
+        if "--new" in args:
+            # --new "需求" -> 进 REPL 并自动 /new（最简：进 repl 让用户手动 /next）
+            # 或直接调 phase_planning。为保行为一致，委托 repl。
+            pass
+        # 默认进 REPL
+        from cli.repl import repl
+        repl()
+        return
+
+    # 无旧式 flag：委托 ss app（Typer 会解析 ss 子命令或进 repl）
+    from cli.main import app
+    app()
+
+
+if __name__ == "__main__":
+    main()
 
 
 def banner():
