@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -817,89 +818,24 @@ async def _dispatch_command(raw: str, orchestrator: StoryOrchestrator) -> bool:
     return False
 
 
-async def main():
-    cfg = load_config()
+async def main_async():
+    """旧版异步入口（已被 cli/main.py 取代，保留供测试引用）。
 
-    # Init LLM client (llmapi.pcl.ac.cn)
+    初始化 orchestrator 并进入交互 REPL。CLI 用户应改用 ``ss repl``。
+    """
+    from config import load_config
+    from orchestrator import StoryOrchestrator
+    from agents.llm_client import init_client
+
+    cfg = load_config()
     vc = init_client(cfg.llm_base_url, cfg.llm_api_key, cfg.main_model)
     orchestrator = StoryOrchestrator(cfg, client=vc)
 
-    # Check API health
     healthy = await vc.check_health()
     if not healthy:
         print("⚠️  LLM API 连接异常，但将继续运行...")
     else:
         print(f"✅ LLM API 已连接")
-        models = await vc.list_models()
-        if models:
-            model_ids = [m["id"] for m in models[:10]]
-            print(f"   可用模型: {', '.join(model_ids)}")
-
-    # Quick command mode
-    if len(sys.argv) > 1:
-        if sys.argv[1] == "--status":
-            status = orchestrator.get_status()
-            print(status)
-            return
-        elif sys.argv[1] == "--new" and len(sys.argv) > 2:
-            request = sys.argv[2]
-            result = await cmd_new(orchestrator, request)
-            print(result)
-            return
-        elif sys.argv[1] == "--submit" and len(sys.argv) > 2:
-            # 提交后台 Job
-            from jobs import JobRunner
-            runner = JobRunner(base_dir="jobs", cfg=cfg)
-            brief = sys.argv[2]
-            project_name = sys.argv[3] if len(sys.argv) > 3 else ""
-            job_id = await runner.submit(brief, project_name=project_name)
-            print(f"✅ 已提交后台 Job: {job_id}")
-            print(f"   用 `python main.py --job {job_id}` 查看状态，`--job-cancel {job_id}` 取消")
-            # P1 修复：原代码 submit 后直接 return，asyncio.run 关闭事件循环会
-            # 取消刚启动的后台 _run_job 任务，job 永远不会真正执行。
-            # 改为等待后台任务完成（或被取消）后再退出。
-            task = runner._tasks.get(job_id)
-            if task is not None:
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    print(f"⏹️ Job {job_id} 已取消")
-                except Exception as e:
-                    print(f"❌ Job {job_id} 失败: {e}")
-            return
-        elif sys.argv[1] == "--jobs":
-            from jobs import JobRunner
-            runner = JobRunner(base_dir="jobs", cfg=cfg)
-            jobs = runner.list()
-            if not jobs:
-                print("📭 暂无后台 Job。")
-            else:
-                for j in jobs:
-                    prog = _format_job_progress(j)
-                    print(f"{j.id}  [{j.status}]  phase={j.phase}  progress={prog}  {j.project_name}")
-            return
-        elif sys.argv[1] == "--job" and len(sys.argv) > 2:
-            from jobs import JobRunner
-            runner = JobRunner(base_dir="jobs", cfg=cfg)
-            job = runner.get(sys.argv[2])
-            if job is None:
-                print(f"❌ Job {sys.argv[2]} 不存在")
-            else:
-                print(job.to_dict())
-            return
-        elif sys.argv[1] == "--job-cancel" and len(sys.argv) > 2:
-            from jobs import JobRunner
-            runner = JobRunner(base_dir="jobs", cfg=cfg)
-            ok = await runner.cancel(sys.argv[2])
-            print(f"✅ 已取消 {sys.argv[2]}" if ok else f"❌ 取消失败（job 不存在或已结束）")
-            return
-        else:
-            print(f"未知参数: {sys.argv[1]}")
-            print("用法: python main.py [--new '<需求>' | --status | "
-                  "--submit '<需求>' [项目名] | --jobs | --job <id> | --job-cancel <id]")
 
     await main_interactive(orchestrator)
 
-
-if __name__ == "__main__":
-    asyncio.run(main())
