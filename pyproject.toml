@@ -32,3 +32,9 @@ testpaths = ["tests"]
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# 显式声明包：避免 setuptools flat-layout 自动发现因 series/ skills/ 等数据
+# 目录报 "Multiple top-level packages" 错误。
+py-modules = []
+packages = ["cli", "config", "agents", "deai", "short_story", "tools"]

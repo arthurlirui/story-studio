@@ -1,0 +1,2 @@
+[console_scripts]
+ss = cli.main:app

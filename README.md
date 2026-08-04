@@ -33,11 +33,26 @@ export LLM_API_KEY="sk-..."
 ### 启动
 
 ```bash
-python main.py                              # 交互模式
-python main.py --new "写一个赛博朋克侦探故事"  # 一步创建
-python main.py --submit "需求" "项目名"      # 后台 Job
-python -m api                                # REST API
+# 统一 CLI（推荐）
+pip install -e ".[cli]"                    # 安装 ss 命令
+ss --help                                  # 查看所有子命令
+ss status                                  # 系统状态
+ss submit "写一个赛博朋克侦探故事" --name 赛博侦探 --chapters 20
+ss repl                                    # 交互式 REPL
+
+# REST API + SSE（后端）
+pip install -e ".[api]"
+python -m api                              # http://localhost:8000
+
+# Web 前端（Next.js + shadcn/ui）
+cd frontend && npm install && npm run dev  # http://localhost:3000
+
+# 向后兼容
+python main.py                              # = ss repl
+python main.py --new "写一个赛博朋克侦探故事"  # 旧式 flag 仍可用
 ```
+
+详见 [docs/CLI.md](docs/CLI.md) 和 [docs/API.md](docs/API.md)。
 
 ---
 
@@ -163,14 +178,22 @@ python -m api                                # REST API
 | `/status` | 系统状态（含累计 token 成本） |
 | `/help` | 帮助 |
 
-### REST API
+### REST API + SSE（24 端点，详见 docs/API.md）
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/novels` | 提交新小说 Job |
 | GET  | `/novels` | 列出所有 Job |
 | GET  | `/novels/{id}` | 查看 Job 状态 |
+| GET  | `/novels/{id}/chapters` | 章节列表（含去AI分/verdict） |
 | GET  | `/novels/{id}/chapters/{n}` | 读取章节正文 |
-| POST | `/novels/{id}/revise` | 重写指定章节 |
+| GET  | `/novels/{id}/outline` `/world` `/characters` | 知识库读取 |
+| GET  | `/novels/{id}/cost` `/quality` | 成本/质量仪表盘 |
+| POST | `/novels/{id}/revise` `/batch` | 重写/批次写作 |
+| POST | `/novels/{id}/run-all` `/resume` | 执行/恢复 |
+| GET  | `/novels/{id}/stream/{chapter}` | **SSE** token 流式生成 |
+| GET  | `/novels/{id}/events` | **SSE** job 进度 |
+| GET  | `/novels/{id}/agents/events` | **SSE** 智能体活动 |
+| GET  | `/series` `/genres` | 系列/类型列表 |
 | GET  | `/health` | 健康检查 |
 
 ---
@@ -223,10 +246,27 @@ story-studio/
 ├── orchestrator.py       # 🎭 编排器（5 phase + 自动修订）
 ├── orchestrator_state.py # 💾 RunState 持久化
 ├── jobs.py               # 📋 JobRunner（多并发）
-├── api.py                # 🌐 FastAPI REST API
-├── main.py               # 🚀 CLI 入口
+├── api/                  # 🌐 FastAPI REST + SSE API 包
+│   ├── __init__.py       #    app 构造 + CORS + 鉴权
+│   ├── legacy.py         #    novels/tasks CRUD
+│   ├── knowledge.py      #    知识库读取端点
+│   ├── series.py         #    系列/类型只读端点
+│   └── stream.py         #    SSE 流式端点
+├── cli/                  # 💻 Typer 统一 CLI
+│   ├── main.py           #    根 app + 全局选项
+│   ├── run.py / jobs.py  #    子命令组
+│   ├── novels.py / export.py
+│   ├── config_cmd.py / agents.py
+│   ├── status.py / repl.py
+│   └── _common.py        #    Rich 输出 helpers
+├── frontend/             # 🖥️ Next.js + shadcn/ui 前端
+│   ├── src/app/          #    仪表盘/小说/章节/任务/设置
+│   ├── src/lib/          #    API client + SSE hooks + 类型
+│   └── src/components/   #    shadcn UI 组件
+├── main.py               # 🚀 兼容入口（委托 cli.main:app）
+├── docs/                 # 📖 CLI.md + API.md 文档
 ├── polish_prompt.txt     # ✨ 独立润色 prompt（含去AI感第 12 条）
-├── pyproject.toml        # 📦 项目元数据
+├── pyproject.toml        # 📦 项目元数据 + [project.scripts] ss
 └── ARCHITECTURE.md       # 📐 架构设计
 ```
 

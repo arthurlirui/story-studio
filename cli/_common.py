@@ -123,17 +123,23 @@ def print_status_panel(status: dict) -> None:
 
 
 def print_agent_tree(agents: list[dict]) -> None:
-    """渲染智能体团队为 Rich 树（按 main/light tier 分组）。"""
+    """渲染智能体团队为 Rich 树（按 main/light tier 分组）。
+
+    tier 判定依据 _agent_model 的路由规则：main tier 的 role 名匹配
+    showrunner/world architect/character designer/character psychologist/
+    scene writer/innovator，其余为 light tier。
+    """
     tree = Tree("🤖 [bold cyan]创作团队[/bold cyan]")
     main_branch = tree.add("[bold]main tier[/bold]（主力模型）")
     light_branch = tree.add("[bold]light tier[/bold]（轻量模型）")
 
+    # main tier 的 role 显示名（与 orchestrator.py 实例化时的第二参数一致）
     main_roles = {
-        "scene_writer", "showrunner", "world_architect",
-        "character_designer", "character_psychologist", "innovator",
+        "Showrunner", "World Architect", "Character Designer",
+        "Character Psychologist", "Scene Writer", "Innovator",
     }
     for a in agents:
-        label = f"{a.get('name', '?')} [dim]({a.get('role', '?')})[/dim] — {a.get('description', '')[:40]}"
+        label = f"{a.get('name', '?')} [dim]({a.get('role', '?')})[/dim] - {a.get('description', '')[:40]}"
         label += f"  [italic]model={a.get('model', '?')}[/italic]"
         if a.get("role") in main_roles:
             main_branch.add(label)

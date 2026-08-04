@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: story-studio
+Version: 1.0.0
+Summary: 多 Agent 协作的小说剧本创作平台（LLM API 驱动）
+Requires-Python: >=3.11
+Requires-Dist: httpx<1.0,>=0.27
+Requires-Dist: pyyaml<7.0,>=6.0
+Requires-Dist: fastapi<1.0,>=0.110
+Requires-Dist: uvicorn<1.0,>=0.27
+Provides-Extra: dev
+Requires-Dist: pytest<9.0,>=8.0; extra == "dev"
+Requires-Dist: httpx<1.0,>=0.27; extra == "dev"
+Provides-Extra: cli
+Requires-Dist: typer<1.0,>=0.27; extra == "cli"
+Provides-Extra: api
+Requires-Dist: sse-starlette<3.0,>=1.8; extra == "api"

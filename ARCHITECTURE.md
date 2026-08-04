@@ -501,7 +501,10 @@ knowledge/
 - [ ] **人物关系图可视化**: 自动生成角色关系网络图
 - [ ] **阅读时长估算**: 根据字数估算各章节阅读时间
 - [ ] **多语言创作**: 支持中英文及翻译
-- [x] **Web 界面**: FastAPI REST API（`api.py`）；前端待接
+- [x] **Web 界面**: FastAPI REST API + SSE 流式接口（`api/` 包）；Next.js + shadcn/ui 前端（`frontend/`）
+  - CLI：`ss` 统一命令（Typer + Rich），见 `docs/CLI.md`
+  - API：24 端点（REST + SSE），见 `docs/API.md`
+  - 前端：仪表盘 / 项目总览 / 章节阅读器（流式生成）/ 质量热力图
 - [ ] **ComfyUI 真实渲染**: 当前封面为 `--dry-run` 提示词，未来接 ComfyUI 出图
 
 ---
