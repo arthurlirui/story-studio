@@ -57,10 +57,8 @@ def list_novels(
 ) -> None:
     """列出小说（后台 Job 或 series/ 下的变体）。"""
     # 优先从 JobRunner index 列出（后台生成的小说）
-    from config import load_config
-    from jobs import JobRunner
-    cfg = load_config()
-    runner = JobRunner(base_dir="jobs", cfg=cfg)
+    from cli._common import get_runner
+    runner = get_runner()
     jobs = runner.list()
     if series:
         # Job 没有 series 字段，按 project_name 模糊匹配
@@ -131,10 +129,8 @@ def _resolve_novel(novel: str) -> Optional[Path]:
             return p
 
     # 2. Job ID
-    from config import load_config
-    from jobs import JobRunner
-    cfg = load_config()
-    runner = JobRunner(base_dir="jobs", cfg=cfg)
+    from cli._common import get_runner
+    runner = get_runner()
     job = runner.get(novel)
     if job is not None and job.knowledge_dir:
         return Path(job.knowledge_dir)

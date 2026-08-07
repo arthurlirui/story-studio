@@ -104,16 +104,17 @@ def submit(
     name: str = typer.Option("", "--name", "-n", help="项目名（书名）"),
     chapters: int = typer.Option(None, "--chapters", "-c", min=1, max=200, help="目标章节数"),
     mode: str = typer.Option("sequential", "--mode", "-m", help="写作模式：sequential | batch"),
+    wait: bool = typer.Option(False, "--wait", help="阻塞等待 Job 完成后再退出（默认提交后立即返回）"),
 ) -> None:
-    """提交一个后台小说生成 Job（立即返回 job_id，后台异步执行）。"""
+    """提交一个后台小说生成 Job。
+
+    默认 ``--no-wait``：提交后立即返回 job_id，Job 在后台异步执行。
+    加 ``--wait`` 则阻塞至 Job 完成（CI/脚本友好）。
+    """
     import asyncio
-    from cli._common import console
-    from config import load_config
+    from cli._common import console, get_runner
 
-    cfg = load_config()
-    from jobs import JobRunner
-
-    runner = JobRunner(base_dir="jobs", cfg=cfg)
+    runner = get_runner()
 
     async def _go():
         job_id = await runner.submit(
@@ -123,11 +124,17 @@ def submit(
         console.print(f"[green]✅ 已提交后台 Job:[/green] [cyan]{job_id}[/cyan]")
         console.print(f"  查看状态: [bold]ss jobs show {job_id}[/bold]")
         console.print(f"  取消:     [bold]ss jobs cancel {job_id}[/bold]")
-        # 等待后台任务完成（否则 asyncio.run 关闭循环会取消刚启动的 task）
+
+        if not wait:
+            console.print(f"[dim]Job 在后台执行中，用 ss jobs show {job_id} 查看进度[/dim]")
+            return
+
+        # --wait：等待后台任务完成
         task = runner._tasks.get(job_id)
         if task is not None:
             try:
                 await task
+                console.print(f"[green]✅ Job {job_id} 已完成[/green]")
             except asyncio.CancelledError:
                 console.print(f"[yellow]⏹️ Job {job_id} 已取消[/yellow]")
             except Exception as e:

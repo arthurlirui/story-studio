@@ -332,6 +332,118 @@ class JobRunner:
         self._save_index()
         return True
 
+    async def retry(self, job_id: str) -> str:
+        """重跑一个 failed/recoverable 的 job（从 task_plan.json 断点续跑）。
+
+        封装状态重置 + 重新排队 + 执行逻辑，避免 CLI 层触碰私有成员。
+        返回 job_id。如果 job 不存在或状态不允许重跑则抛出 ValueError。
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise ValueError(f"Job {job_id} 不存在")
+        if job.status not in (JOB_FAILED, JOB_RECOVERABLE):
+            raise ValueError(f"Job 状态为 {job.status}，仅 failed/recoverable 可重跑")
+
+        job.status = JOB_QUEUED
+        job.error = None
+        job.touch()
+        self._save_index()
+
+        task = asyncio.create_task(self._run_job(job, None))
+        self._tasks[job.id] = task
+        return job_id
+
+    async def run_task(self, job_id: str, task_n: int) -> str:
+        """运行 job 的第 N 个计划任务（1-based）。
+
+        对应 API 的 POST /novels/{job_id}/tasks/{task_n}/run。
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise ValueError(f"Job {job_id} 不存在")
+
+        import copy
+        from pathlib import Path
+        from orchestrator import StoryOrchestrator
+        from agents.llm_client import LLMClient
+        from planner import TaskPlanner
+
+        cfg = copy.deepcopy(self.cfg)
+        cfg.knowledge_dir = job.knowledge_dir
+        cfg.output_dir = job.output_dir
+        client = LLMClient(
+            base_url=cfg.llm_base_url, api_key=cfg.llm_api_key,
+            default_model=cfg.main_model,
+        )
+        try:
+            orch = StoryOrchestrator(cfg, client=client)
+            if job.project_name:
+                orch.project_name = job.project_name
+            planner = TaskPlanner(
+                orch, orch.knowledge, cfg, orch.worklog,
+                plan_path=Path(job.knowledge_dir) / "task_plan.json",
+            )
+            plan = planner.load_plan()
+            if plan is None:
+                raise ValueError(f"Job {job_id} 无 task_plan.json，请先 run-all")
+            if task_n < 1 or task_n > len(plan.tasks):
+                raise ValueError(f"任务号 {task_n} 超出范围（1-{len(plan.tasks)}）")
+            task = plan.tasks[task_n - 1]
+            result = await planner.run_task(task)
+            _on_progress = make_on_progress(job, planner, orch, on_save=self._save_index)
+            _on_progress(task)
+            self._save_index()
+            return result or ""
+        finally:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+
+    async def run_all_tasks(self, job_id: str) -> str:
+        """运行 job 的所有待执行任务（对应 API 的 POST /run-all）。"""
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise ValueError(f"Job {job_id} 不存在")
+
+        import copy
+        from pathlib import Path
+        from orchestrator import StoryOrchestrator
+        from agents.llm_client import LLMClient
+        from planner import TaskPlanner
+
+        cfg = copy.deepcopy(self.cfg)
+        cfg.knowledge_dir = job.knowledge_dir
+        cfg.output_dir = job.output_dir
+        client = LLMClient(
+            base_url=cfg.llm_base_url, api_key=cfg.llm_api_key,
+            default_model=cfg.main_model,
+        )
+        try:
+            orch = StoryOrchestrator(cfg, client=client)
+            if job.project_name:
+                orch.project_name = job.project_name
+            planner = TaskPlanner(
+                orch, orch.knowledge, cfg, orch.worklog,
+                plan_path=Path(job.knowledge_dir) / "task_plan.json",
+            )
+            plan = planner.load_plan()
+            if plan is None:
+                planner.build_plan(
+                    brief=job.brief, total_chapters=None,
+                    write_mode=job.write_mode, job_id=job.id,
+                )
+            _on_progress = make_on_progress(job, planner, orch, on_save=self._save_index)
+            await planner.run_all(on_progress=_on_progress, stop_on_failure=True)
+            finalize_job_after_run_all(job, planner, orch, fallback_total=0)
+            self._save_index()
+            return "done"
+        finally:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+
     # ── Internal runner ────────────────────────────────────────
 
     async def _run_job(self, job: Job, total_chapters: int | None) -> None:

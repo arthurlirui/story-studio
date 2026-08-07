@@ -20,13 +20,9 @@ def status(
 
     读取 config.settings.yaml 指向的 knowledge_dir 的 orchestrator 状态。
     """
-    from config import load_config
-    from agents.llm_client import init_client
-    from orchestrator import StoryOrchestrator
+    from cli._common import build_orch
 
-    cfg = load_config()
-    client = init_client(cfg.llm_base_url, cfg.llm_api_key, cfg.main_model)
-    orch = StoryOrchestrator(cfg, client=client)
+    _, orch, _ = build_orch()
     status_dict = orch.get_status()
 
     if fmt == "json":

@@ -37,11 +37,11 @@ def repl() -> None:
     async def _go():
         # 复用 main.py 的初始化 + 交互循环
         import main as _main
-        from config import load_config
+        from cli._common import load_cfg
         from agents.llm_client import init_client
         from orchestrator import StoryOrchestrator
 
-        cfg = load_config()
+        cfg = load_cfg()
         vc = init_client(cfg.llm_base_url, cfg.llm_api_key, cfg.main_model)
         orch = StoryOrchestrator(cfg, client=vc)
 

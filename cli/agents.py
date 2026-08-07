@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import typer
 
-from cli._common import console, print_agent_tree
+from cli._common import console, print_agent_tree, build_orch
 
 app = typer.Typer(
     name="agents",
@@ -13,20 +13,10 @@ app = typer.Typer(
 )
 
 
-def _build_orch():
-    """懒加载 orchestrator 以读取 agents 注册表。"""
-    from config import load_config
-    from agents.llm_client import init_client
-    from orchestrator import StoryOrchestrator
-    cfg = load_config()
-    client = init_client(cfg.llm_base_url, cfg.llm_api_key, cfg.main_model)
-    return StoryOrchestrator(cfg, client=client)
-
-
 @app.command("list")
 def agents_list() -> None:
     """列出所有智能体（按 main/light tier 分组的树形图）。"""
-    orch = _build_orch()
+    _, orch, _ = build_orch()
     agents = [a.to_dict() for a in orch.agents.values()]
     print_agent_tree(agents)
 
@@ -36,7 +26,7 @@ def agents_inspect(
     name: str = typer.Argument(..., help="智能体角色名（如 showrunner / scene_writer）"),
 ) -> None:
     """查看某智能体的详情（含 system_prompt 摘要）。"""
-    orch = _build_orch()
+    _, orch, _ = build_orch()
     # 支持 name（中文）或 role（英文 key）
     agent = orch.agents.get(name) or orch.agents.get(name.lower())
     if agent is None:
