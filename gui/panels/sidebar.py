@@ -7,7 +7,7 @@ from typing import Callable
 
 import dearpygui.dearpygui as dpg
 
-from gui.panels.menu import PHASE_LABELS, PHASE_ORDER, PHASE_IDLE
+from gui.panels.menu import PHASE_LABELS, PHASE_ORDER
 
 # ── 颜色定义 ──
 COLOR_IDLE = (100, 100, 100)
@@ -25,6 +25,7 @@ def build_sidebar(
     on_stop: Callable,
     on_phase_click: Callable,   # (phase_key: str)
     on_export: Callable,        # (export_type: str)
+    on_save_all: Callable,      # () -> None
 ) -> None:
     """在左侧创建控制面板。
 
@@ -37,7 +38,7 @@ def build_sidebar(
         dpg.add_separator()
         _build_workflow_section(on_start, on_stop, on_phase_click)
         dpg.add_separator()
-        _build_actions_section(on_start, on_stop, on_export)
+        _build_actions_section(on_export, on_save_all)
         dpg.add_separator()
         _build_agent_section()
 
@@ -214,16 +215,14 @@ def _build_workflow_section(
 
 
 def _build_actions_section(
-    on_start: Callable,
-    on_stop: Callable,
     on_export: Callable,
+    on_save_all: Callable,
 ) -> None:
     """操作按钮区。"""
     dpg.add_text("📦 操作", color=(180, 180, 100))
     with dpg.group(horizontal=True):
         dpg.add_button(label="📦 导出", callback=lambda: on_export("final"), width=75)
-        # "保存全部" 按钮 — 回调通过 app.py 注册的外部回调注入
-        dpg.add_button(label="💾 保存全部", tag="save_all_btn", width=75)
+        dpg.add_button(label="💾 保存全部", callback=lambda: on_save_all(), width=75)
 
 
 def _build_agent_section() -> None:

@@ -31,9 +31,14 @@ logger = logging.getLogger(__name__)
 # Log message model
 # ---------------------------------------------------------------------------
 
+# 特殊 agent 标记，用于在 log_queue 中传递非日志事件（阶段变更、任务完成）。
+# 主线程 poll 时识别这些标记并触发对应回调，避免后台线程直接操作 GUI。
+_EVENT_PHASE_CHANGE = "__PHASE_CHANGE__"
+_EVENT_JOB_DONE = "__JOB_DONE__"
+
 @dataclass
 class GUILogEntry:
-    """一条发给 GUI 日志面板的消息。"""
+    """一条发给 GUI 日志面板的消息，也可携带控制事件。"""
     timestamp: float = field(default_factory=time.time)
     agent: str = ""
     phase: str = ""
@@ -66,7 +71,7 @@ class GUIController:
         self.store: Any = None          # KnowledgeStore 实例
         self.config: Any = None         # StudioConfig 实例
 
-        # 回调（由 app.py 注册）
+        # 回调（由 app.py 注册；均在主线程 poll 时调用，而非后台线程直接调用）
         self._on_log: Callable[[GUILogEntry], None] | None = None
         self._on_phase_change: Callable[[str], None] | None = None
         self._on_job_done: Callable[[bool], None] | None = None
@@ -82,7 +87,7 @@ class GUIController:
             True 表示初始化成功，False 表示失败（缺少 API key 等）。
         """
         try:
-            from config import load_config, StudioConfig
+            from config import load_config
 
             kd = Path(config_dir) if config_dir else None
             self.config = load_config(str(kd) if kd else "")
@@ -113,7 +118,7 @@ class GUIController:
             return True
         except Exception as e:
             logger.error(f"初始化项目失败: {e}")
-            self._emit_log("System", "", "ERROR", f"初始化失败: {e}")
+            self.emit_log("System", "", "ERROR", f"初始化失败: {e}")
             return False
 
     def _create_store(self) -> Any:
@@ -129,8 +134,8 @@ class GUIController:
     # 日志发送
     # ------------------------------------------------------------------
 
-    def _emit_log(self, agent: str, phase: str, level: str, message: str, excerpt: str = "") -> None:
-        """向 log_queue 发送一条日志（线程安全）。"""
+    def emit_log(self, agent: str, phase: str, level: str, message: str, excerpt: str = "") -> None:
+        """向 log_queue 发送一条日志（线程安全，可从任意线程调用）。"""
         self.log_queue.put(GUILogEntry(
             agent=agent,
             phase=phase,
@@ -138,6 +143,10 @@ class GUIController:
             message=message,
             excerpt=excerpt,
         ))
+
+    def _emit_log(self, agent: str, phase: str, level: str, message: str, excerpt: str = "") -> None:
+        """已废弃，请使用 emit_log。保留向后兼容。"""
+        self.emit_log(agent, phase, level, message, excerpt)
 
     # ------------------------------------------------------------------
     # Job 启动与停止
@@ -150,13 +159,21 @@ class GUIController:
         total_chapters: int = 10,
         write_mode: str = "sequential",
     ) -> None:
-        """在后台线程启动完整的 7 阶段创作流程。"""
+        """在后台线程启动完整的 7 阶段创作流程。
+
+        Args:
+            brief: 创作梗概
+            genre: 类型关键词（目前由 orchestrator 从 brief 文本自动检测，
+                   此参数保留供未来显式 genre 传递使用）
+            total_chapters: 目标章节数
+            write_mode: "sequential" 或 "batch"
+        """
         if self._job_thread and self._job_thread.is_alive():
-            self._emit_log("System", "", "WARNING", "已有任务在运行中，请先停止")
+            self.emit_log("System", "", "WARNING", "已有任务在运行中，请先停止")
             return
 
         if not self.orchestrator:
-            self._emit_log("System", "", "ERROR", "未初始化 orchestrator（缺少 API key 或配置）")
+            self.emit_log("System", "", "ERROR", "未初始化 orchestrator（缺少 API key 或配置）")
             return
 
         self._stop_event.clear()
@@ -166,22 +183,27 @@ class GUIController:
             daemon=True,
         )
         self._job_thread.start()
-        self._emit_log("System", "", "INFO", "🎬 创作流程已启动")
+        self.emit_log("System", "", "INFO", "🎬 创作流程已启动")
 
-    def start_single_phase(self, phase_name: str) -> None:
-        """在后台线程运行单个阶段。"""
+    def start_single_phase(self, phase_name: str, brief: str = "") -> None:
+        """在后台线程运行单个阶段。
+
+        Args:
+            phase_name: 阶段 key（research/innovate/.../complete）
+            brief: 创作梗概（research/innovate/planning 阶段需要）
+        """
         if self._job_thread and self._job_thread.is_alive():
-            self._emit_log("System", "", "WARNING", "已有任务在运行中，请先停止")
+            self.emit_log("System", "", "WARNING", "已有任务在运行中，请先停止")
             return
 
         if not self.orchestrator:
-            self._emit_log("System", "", "ERROR", "未初始化 orchestrator")
+            self.emit_log("System", "", "ERROR", "未初始化 orchestrator")
             return
 
         self._stop_event.clear()
         self._job_thread = threading.Thread(
             target=self._run_async_phase,
-            args=(phase_name,),
+            args=(phase_name, brief),
             daemon=True,
         )
         self._job_thread.start()
@@ -189,7 +211,7 @@ class GUIController:
     def stop_job(self) -> None:
         """发送停止信号给后台任务。"""
         self._stop_event.set()
-        self._emit_log("System", "", "WARNING", "⏹ 正在停止当前任务...")
+        self.emit_log("System", "", "WARNING", "⏹ 正在停止当前任务...")
 
     def is_running(self) -> bool:
         """检查后台任务是否正在运行。"""
@@ -207,27 +229,32 @@ class GUIController:
         try:
             loop.run_until_complete(self._async_full_pipeline(brief, genre, total_chapters, write_mode))
         except Exception as e:
-            self._emit_log("System", "", "ERROR", f"流程异常: {e}")
+            self.emit_log("System", "", "ERROR", f"流程异常: {e}")
         finally:
             self._loop = None
             loop.close()
-            if self._on_job_done:
-                self._on_job_done(not self._stop_event.is_set())
+            # 通过队列通知主线程任务完成（不在后台线程直接调用回调）
+            self.log_queue.put(GUILogEntry(
+                agent=_EVENT_JOB_DONE,
+                message="success" if not self._stop_event.is_set() else "stopped",
+            ))
 
-    def _run_async_phase(self, phase_name: str) -> None:
+    def _run_async_phase(self, phase_name: str, brief: str = "") -> None:
         """后台线程：运行单个阶段。"""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._loop = loop
         try:
-            loop.run_until_complete(self._async_single_phase(phase_name))
+            loop.run_until_complete(self._async_single_phase(phase_name, brief))
         except Exception as e:
-            self._emit_log("System", "", "ERROR", f"阶段 [{phase_name}] 异常: {e}")
+            self.emit_log("System", "", "ERROR", f"阶段 [{phase_name}] 异常: {e}")
         finally:
             self._loop = None
             loop.close()
-            if self._on_job_done:
-                self._on_job_done(not self._stop_event.is_set())
+            self.log_queue.put(GUILogEntry(
+                agent=_EVENT_JOB_DONE,
+                message="success" if not self._stop_event.is_set() else "stopped",
+            ))
 
     # ------------------------------------------------------------------
     # Async 流程实现
@@ -248,16 +275,16 @@ class GUIController:
 
         for phase_key, phase_label, phase_fn in phases:
             if self._stop_event.is_set():
-                self._emit_log("System", phase_key, "WARNING", f"用户停止，跳过阶段: {phase_label}")
+                self.emit_log("System", phase_key, "WARNING", f"用户停止，跳过阶段: {phase_label}")
                 return
             await self._run_phase(phase_key, phase_label, phase_fn)
 
         # 写作阶段
         if write_mode == "batch":
-            self._emit_log("System", "writing", "INFO", f"📝 批量并行写作 {total_chapters} 章")
+            self.emit_log("System", "writing", "INFO", f"📝 批量并行写作 {total_chapters} 章")
             for start in range(1, total_chapters + 1, orch.config.batch_size):
                 if self._stop_event.is_set():
-                    self._emit_log("System", "writing", "WARNING", "用户停止写作")
+                    self.emit_log("System", "writing", "WARNING", "用户停止写作")
                     return
                 count = min(orch.config.batch_size, total_chapters - start + 1)
                 await self._run_phase(
@@ -268,7 +295,7 @@ class GUIController:
         else:
             for ch in range(1, total_chapters + 1):
                 if self._stop_event.is_set():
-                    self._emit_log("System", "writing", "WARNING", f"用户停止写作（已完成 {ch-1} 章）")
+                    self.emit_log("System", "writing", "WARNING", f"用户停止写作（已完成 {ch-1} 章）")
                     return
                 await self._run_phase(
                     "writing",
@@ -279,46 +306,53 @@ class GUIController:
         # 完成
         await self._run_phase("complete", "完成", lambda: orch.phase_complete())
 
-        self._emit_log("System", "", "SUCCESS", "🎉 创作流程全部完成！")
+        self.emit_log("System", "", "SUCCESS", "🎉 创作流程全部完成！")
 
-    async def _async_single_phase(self, phase_name: str) -> None:
-        """运行单个阶段。"""
+    async def _async_single_phase(self, phase_name: str, brief: str = "") -> None:
+        """运行单个阶段。
+
+        Args:
+            phase_name: 阶段 key
+            brief: 创作梗概（research/innovate/planning 阶段需要）
+        """
         orch = self.orchestrator
         phase_map = {
-            "research": ("调研", lambda: orch.phase_research("")),
-            "innovate": ("创新", lambda: orch.phase_innovate("")),
-            "planning": ("企划", lambda: orch.phase_planning("")),
+            "research": ("调研", lambda: orch.phase_research(brief)),
+            "innovate": ("创新", lambda: orch.phase_innovate(brief)),
+            "planning": ("企划", lambda: orch.phase_planning(brief)),
             "building": ("构建", lambda: orch.phase_building()),
             "outlining": ("大纲", lambda: orch.phase_outlining(orch.total_chapters or 10)),
-            "writing": ("写作", lambda: orch.phase_writing(orch.current_chapter + 1)),
+            "writing": ("写作", lambda: orch.phase_writing(
+                min(orch.current_chapter + 1, orch.total_chapters or orch.current_chapter + 1)
+            )),
             "complete": ("完成", lambda: orch.phase_complete()),
         }
         if phase_name not in phase_map:
-            self._emit_log("System", phase_name, "ERROR", f"未知阶段: {phase_name}")
+            self.emit_log("System", phase_name, "ERROR", f"未知阶段: {phase_name}")
             return
 
         label, fn = phase_map[phase_name]
         await self._run_phase(phase_name, label, fn)
-        self._emit_log("System", phase_name, "SUCCESS", f"阶段 [{label}] 完成")
+        self.emit_log("System", phase_name, "SUCCESS", f"阶段 [{label}] 完成")
 
     async def _run_phase(self, phase_key: str, phase_label: str, phase_fn) -> None:
-        """执行单个阶段，带日志和阶段变更回调。"""
-        self._emit_log("System", phase_key, "INFO", f"▶ 开始阶段: {phase_label}")
-        if self._on_phase_change:
-            self._on_phase_change(phase_key)
+        """执行单个阶段，带日志和阶段变更事件。"""
+        self.emit_log("System", phase_key, "INFO", f"▶ 开始阶段: {phase_label}")
+        # 通过队列通知主线程阶段变更（线程安全）
+        self.log_queue.put(GUILogEntry(agent=_EVENT_PHASE_CHANGE, phase=phase_key))
 
         start_time = time.time()
         try:
             result = await phase_fn()
             elapsed = time.time() - start_time
-            self._emit_log(
+            self.emit_log(
                 "System", phase_key, "SUCCESS",
                 f"✅ [{phase_label}] 完成 (耗时 {elapsed:.1f}s)",
                 excerpt=result[:200] if isinstance(result, str) else "",
             )
         except Exception as e:
             elapsed = time.time() - start_time
-            self._emit_log(
+            self.emit_log(
                 "System", phase_key, "ERROR",
                 f"❌ [{phase_label}] 失败 (耗时 {elapsed:.1f}s): {e}",
             )
@@ -340,7 +374,7 @@ class GUIController:
         """保存世界观设定。"""
         if self.store:
             self.store.save_world("settings", content)
-            self._emit_log("System", "", "INFO", "💾 世界观设定已保存")
+            self.emit_log("System", "", "INFO", "💾 世界观设定已保存")
 
     def load_character(self, name: str) -> str:
         """读取角色档案。"""
@@ -355,7 +389,7 @@ class GUIController:
         """保存角色档案。"""
         if self.store:
             self.store.save_character(name, content)
-            self._emit_log("System", "", "INFO", f"💾 角色 [{name}] 已保存")
+            self.emit_log("System", "", "INFO", f"💾 角色 [{name}] 已保存")
 
     def list_characters(self) -> list[str]:
         """列出所有角色名。"""
@@ -376,7 +410,7 @@ class GUIController:
         """保存故事大纲。"""
         if self.store:
             self.store.save_outline(content)
-            self._emit_log("System", "", "INFO", "💾 故事大纲已保存")
+            self.emit_log("System", "", "INFO", "💾 故事大纲已保存")
 
     def load_chapter(self, chapter_num: int) -> str:
         """读取指定章节。"""
@@ -391,7 +425,7 @@ class GUIController:
         """保存章节。"""
         if self.store:
             self.store.save_chapter(chapter_num, content, author or "用户编辑")
-            self._emit_log("System", "", "INFO", f"💾 第 {chapter_num} 章已保存")
+            self.emit_log("System", "", "INFO", f"💾 第 {chapter_num} 章已保存")
 
     def list_chapters(self) -> list[int]:
         """列出所有章节号。"""
@@ -419,8 +453,8 @@ class GUIController:
         if self.orchestrator:
             try:
                 return self.orchestrator.get_status()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"get_status() 失败: {e}")
         return {}
 
     def get_agent_names(self) -> list[str]:
@@ -441,3 +475,34 @@ class GUIController:
 
     def set_on_job_done(self, callback: Callable[[bool], None]) -> None:
         self._on_job_done = callback
+
+    # ------------------------------------------------------------------
+    # 主线程轮询 — 处理队列中的日志和事件
+    # ------------------------------------------------------------------
+
+    def poll_events(self) -> None:
+        """从 log_queue 取出所有等待中的消息并分发。
+
+        此方法**只能在主线程调用**（如 DearPyGUI 渲染循环中每帧调用）。
+        普通日志交给 _on_log 回调；特殊事件（阶段变更、任务完成）
+        交给对应回调。这样确保所有 GUI 操作都在主线程执行。
+        """
+        while True:
+            try:
+                entry = self.log_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            # 特殊事件处理
+            if entry.agent == _EVENT_PHASE_CHANGE:
+                if self._on_phase_change:
+                    self._on_phase_change(entry.phase)
+                continue
+            if entry.agent == _EVENT_JOB_DONE:
+                if self._on_job_done:
+                    self._on_job_done(entry.message == "success")
+                continue
+
+            # 普通日志
+            if self._on_log:
+                self._on_log(entry)

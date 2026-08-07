@@ -8,6 +8,9 @@ from typing import Callable
 
 import dearpygui.dearpygui as dpg
 
+# 仓库根目录（dialogs.py → gui/panels/ → gui/ → repo root）
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
 
 def build_dialogs(
     on_new_confirm: Callable,   # (project_name: str, base_dir: str)
@@ -59,7 +62,7 @@ def build_dialogs(
         dpg.add_input_text(
             tag="dialog_base_dir",
             label="保存路径",
-            default_value=str(Path.cwd() / "projects"),
+            default_value=str(_REPO_ROOT / "projects"),
             width=-1,
         )
 
@@ -86,7 +89,7 @@ def build_dialogs(
         dpg.add_input_text(
             tag="dialog_open_dir",
             label="项目路径 (knowledge_dir)",
-            default_value=str(Path.cwd()),
+            default_value=str(_REPO_ROOT),
             width=-1,
         )
         dpg.add_text("提示: 选择包含 world/、characters/、story/ 的目录", color=(150, 150, 150))

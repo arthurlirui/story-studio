@@ -97,7 +97,7 @@ def build_editor(
                     label="选择章节",
                     items=[],
                     width=200,
-                    callback=lambda s, a, u: on_chapter_select(int(a) if a else 1),
+                    callback=lambda s, a, u: on_chapter_select(_safe_int(a, 1)),
                 )
                 dpg.add_button(label="🔄", callback=lambda: on_refresh_chapter(), width=30)
             dpg.add_input_text(
@@ -212,11 +212,7 @@ def get_selected_character() -> str:
 
 def get_selected_chapter() -> int:
     """获取当前选中的章节号。"""
-    val = _safe_get_value(CHAPTER_SELECTOR_TAG)
-    try:
-        return int(val)
-    except (ValueError, TypeError):
-        return 1
+    return _safe_int(_safe_get_value(CHAPTER_SELECTOR_TAG), 1)
 
 
 def get_selected_research() -> str:
@@ -240,3 +236,11 @@ def _safe_get_value(tag: str) -> str:
 def _safe_configure_item(tag: str, **kwargs) -> None:
     if dpg.does_item_exist(tag):
         dpg.configure_item(tag, **kwargs)
+
+
+def _safe_int(val: str, default: int = 0) -> int:
+    """安全将字符串转为 int，失败时返回 default。"""
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default

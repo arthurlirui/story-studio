@@ -15,6 +15,7 @@ Story Studio DearPyGUI 桌面应用入口。
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import dearpygui.dearpygui as dpg
@@ -25,11 +26,12 @@ from gui.panels import menu, sidebar, editor, log_panel, dialogs
 # ── 常量 ──
 WINDOW_WIDTH = 1600
 WINDOW_HEIGHT = 900
-LOG_POLL_INTERVAL = 0.05  # 50ms
+LOG_POLL_INTERVAL = 0.05  # 50ms — 日志轮询最小间隔，避免高帧率下空轮询
 
 
 # ── 全局控制器实例 ──
 _ctrl = GUIController()
+_last_poll_time = 0.0
 
 
 # ======================================================================
@@ -62,17 +64,17 @@ def main() -> None:
     # 6. 设置 DearPyGUI
     dpg.setup_dearpygui()
 
-    # 6. 显示窗口 + 调整主窗口大小
+    # 7. 显示窗口 + 调整主窗口大小
     dpg.show_viewport()
     dpg.maximize_viewport()
 
-    # 7. 渲染循环
+    # 8. 渲染循环
     while dpg.is_dearpygui_running():
-        # 每帧轮询日志队列
+        # 每帧轮询日志队列（限流到 LOG_POLL_INTERVAL）
         _poll_logs()
         dpg.render_dearpygui_frame()
 
-    # 8. 清理
+    # 9. 清理
     dpg.destroy_context()
 
 
@@ -84,9 +86,9 @@ def _init_project() -> None:
     """加载配置，初始化 orchestrator 和 knowledge store。"""
     success = _ctrl.init_project()
     if success and _ctrl.orchestrator:
-        _ctrl._emit_log("System", "", "SUCCESS", "✅ 项目初始化成功")
+        _ctrl.emit_log("System", "", "SUCCESS", "✅ 项目初始化成功")
     elif success:
-        _ctrl._emit_log("System", "", "WARNING", "⚠️ 项目以只读模式运行（未配置 API key）")
+        _ctrl.emit_log("System", "", "WARNING", "⚠️ 项目以只读模式运行（未配置 API key）")
 
 
 # ======================================================================
@@ -121,6 +123,7 @@ def _build_ui() -> None:
                 on_stop=_on_stop,
                 on_phase_click=_on_run_single_phase,
                 on_export=_on_export,
+                on_save_all=_on_save_all,
             )
 
             # 右侧区域（上下分）
@@ -147,12 +150,9 @@ def _build_ui() -> None:
                 log_panel.build_log_panel()
 
     # ── 注册控制器回调 ──
+    _ctrl.set_on_log(_handle_log_entry)
     _ctrl.set_on_phase_change(_on_phase_change_from_job)
     _ctrl.set_on_job_done(_on_job_done)
-
-    # ── 侧边栏额外按钮接线 ──
-    if dpg.does_item_exist("save_all_btn"):
-        dpg.configure_item("save_all_btn", callback=lambda: _on_save_all())
 
     # ── 初始刷新编辑器内容 ──
     _refresh_all_editors()
@@ -195,7 +195,7 @@ def _on_new_project(name: str, base_dir: str) -> None:
 
     dpg.set_value("label_kd_path", f"📂 {kd}")
     dpg.set_value("input_project_name", name)
-    _ctrl._emit_log("System", "", "SUCCESS", f"✅ 项目 [{name}] 已创建: {kd}")
+    _ctrl.emit_log("System", "", "SUCCESS", f"✅ 项目 [{name}] 已创建: {kd}")
     _refresh_all_editors()
 
 
@@ -203,12 +203,12 @@ def _on_open_project(project_dir: str) -> None:
     """打开已有项目。"""
     p = Path(project_dir)
     if not p.exists():
-        _ctrl._emit_log("System", "", "ERROR", f"路径不存在: {project_dir}")
+        _ctrl.emit_log("System", "", "ERROR", f"路径不存在: {project_dir}")
         return
 
     kd = p if (p / "world").exists() else p / "knowledge"
     if not (kd / "world").exists():
-        _ctrl._emit_log("System", "", "ERROR", f"非有效项目目录（缺少 world/ 子目录）: {kd}")
+        _ctrl.emit_log("System", "", "ERROR", f"非有效项目目录（缺少 world/ 子目录）: {kd}")
         return
 
     if _ctrl.config:
@@ -218,7 +218,7 @@ def _on_open_project(project_dir: str) -> None:
 
     dpg.set_value("label_kd_path", f"📂 {kd}")
     dpg.set_value("input_project_name", p.name)
-    _ctrl._emit_log("System", "", "SUCCESS", f"✅ 已打开项目: {kd}")
+    _ctrl.emit_log("System", "", "SUCCESS", f"✅ 已打开项目: {kd}")
     _refresh_all_editors()
 
 
@@ -230,22 +230,23 @@ def _on_start_pipeline() -> None:
     """开始完整创作流程。"""
     brief = sidebar.get_brief_text().strip()
     if not brief:
-        _ctrl._emit_log("System", "", "WARNING", "⚠️ 请先输入故事梗概")
+        _ctrl.emit_log("System", "", "WARNING", "⚠️ 请先输入故事梗概")
         return
 
     genre = sidebar.get_genre()
     chapters = sidebar.get_total_chapters()
     mode = sidebar.get_write_mode()
 
-    _ctrl._emit_log("System", "", "INFO",
+    _ctrl.emit_log("System", "", "INFO",
                     f"📝 梗概: {brief[:80]}... | 类型: {genre or '未指定'} | "
                     f"{chapters}章 | 模式: {mode}")
     _ctrl.start_full_pipeline(brief, genre, chapters, mode)
 
 
 def _on_run_single_phase(phase_key: str) -> None:
-    """单独运行某个阶段。"""
-    _ctrl.start_single_phase(phase_key)
+    """单独运行某个阶段，传入当前梗概供 research/innovate/planning 使用。"""
+    brief = sidebar.get_brief_text().strip()
+    _ctrl.start_single_phase(phase_key, brief=brief)
 
 
 def _on_stop() -> None:
@@ -281,7 +282,7 @@ def _on_save_chapter() -> None:
 def _on_save_research() -> None:
     topic = editor.get_selected_research()
     if topic:
-        _ctrl._emit_log("System", "", "INFO", f"💾 研究 [{topic}] 保存（需实现 save_research）")
+        _ctrl.emit_log("System", "", "INFO", f"💾 研究 [{topic}] 保存（需实现 save_research）")
 
 
 def _on_save_all() -> None:
@@ -291,14 +292,14 @@ def _on_save_all() -> None:
     _on_save_outline()
     _on_save_chapter()
     _on_save_research()
-    _ctrl._emit_log("System", "", "SUCCESS", "✅ 全部内容已保存")
+    _ctrl.emit_log("System", "", "SUCCESS", "✅ 全部内容已保存")
 
 
 # ── 刷新 ──
 
 def _on_refresh_world() -> None:
     editor.set_world_text(_ctrl.load_world_settings())
-    _ctrl._emit_log("System", "", "INFO", "🔄 世界观已刷新")
+    _ctrl.emit_log("System", "", "INFO", "🔄 世界观已刷新")
 
 
 def _on_refresh_char() -> None:
@@ -309,12 +310,12 @@ def _on_refresh_char() -> None:
         dpg.set_value(editor.CHAR_SELECTOR_TAG, chars[0])
     else:
         editor.set_char_text("")
-    _ctrl._emit_log("System", "", "INFO", f"🔄 角色列表已刷新 ({len(chars)} 个)")
+    _ctrl.emit_log("System", "", "INFO", f"🔄 角色列表已刷新 ({len(chars)} 个)")
 
 
 def _on_refresh_outline() -> None:
     editor.set_outline_text(_ctrl.load_outline())
-    _ctrl._emit_log("System", "", "INFO", "🔄 大纲已刷新")
+    _ctrl.emit_log("System", "", "INFO", "🔄 大纲已刷新")
 
 
 def _on_refresh_chapter() -> None:
@@ -325,7 +326,7 @@ def _on_refresh_chapter() -> None:
         dpg.set_value(editor.CHAPTER_SELECTOR_TAG, str(chapters[-1]))
     else:
         editor.set_chapter_text("")
-    _ctrl._emit_log("System", "", "INFO", f"🔄 章节列表已刷新 ({len(chapters)} 章)")
+    _ctrl.emit_log("System", "", "INFO", f"🔄 章节列表已刷新 ({len(chapters)} 章)")
 
 
 def _on_refresh_research() -> None:
@@ -336,7 +337,7 @@ def _on_refresh_research() -> None:
         dpg.set_value(editor.RESEARCH_SELECTOR_TAG, topics[0])
     else:
         editor.set_research_text("")
-    _ctrl._emit_log("System", "", "INFO", f"🔄 研究主题已刷新 ({len(topics)} 个)")
+    _ctrl.emit_log("System", "", "INFO", f"🔄 研究主题已刷新 ({len(topics)} 个)")
 
 
 def _refresh_all_editors() -> None:
@@ -390,7 +391,7 @@ def _on_export(export_type: str) -> None:
         export_type: "final" | "synopsis" | "cover"
     """
     if not _ctrl.config:
-        _ctrl._emit_log("System", "", "ERROR", "未初始化配置，无法导出")
+        _ctrl.emit_log("System", "", "ERROR", "未初始化配置，无法导出")
         return
 
     out_dir = Path(_ctrl.config.output_dir)
@@ -402,10 +403,10 @@ def _on_export(export_type: str) -> None:
             final_md = out_dir / "final.md"
             final_txt = out_dir / "final.txt"
             if final_txt.exists():
-                _ctrl._emit_log("System", "", "SUCCESS",
+                _ctrl.emit_log("System", "", "SUCCESS",
                                 f"📦 最终正文已存在: {final_txt}")
             elif final_md.exists():
-                _ctrl._emit_log("System", "", "SUCCESS",
+                _ctrl.emit_log("System", "", "SUCCESS",
                                 f"📦 最终正文 (md) 已存在: {final_md}")
             else:
                 # 拼接所有章节为导出内容
@@ -416,32 +417,32 @@ def _on_export(export_type: str) -> None:
                     )
                     out_path = out_dir / "export_final.txt"
                     out_path.write_text(all_text, encoding="utf-8")
-                    _ctrl._emit_log("System", "", "SUCCESS",
+                    _ctrl.emit_log("System", "", "SUCCESS",
                                     f"📦 已导出 {len(chapters)} 章到: {out_path}")
                 else:
-                    _ctrl._emit_log("System", "", "WARNING", "没有章节可导出")
+                    _ctrl.emit_log("System", "", "WARNING", "没有章节可导出")
 
         elif export_type == "synopsis":
             synopsis = out_dir / "synopsis.txt"
             if synopsis.exists():
                 content = synopsis.read_text(encoding="utf-8")
-                _ctrl._emit_log("System", "", "SUCCESS",
+                _ctrl.emit_log("System", "", "SUCCESS",
                                 f"📦 梗概: {content[:100]}...")
             else:
-                _ctrl._emit_log("System", "", "WARNING", "未生成梗概，请完成创作流程")
+                _ctrl.emit_log("System", "", "WARNING", "未生成梗概，请完成创作流程")
 
         elif export_type == "cover":
             cover_dir = out_dir / "covers"
             brief = cover_dir / "cover_brief.json"
             prompt = cover_dir / "cover_prompt.txt"
             if brief.exists() or prompt.exists():
-                _ctrl._emit_log("System", "", "SUCCESS",
+                _ctrl.emit_log("System", "", "SUCCESS",
                                 f"📦 封面简报已存在: {cover_dir}")
             else:
-                _ctrl._emit_log("System", "", "WARNING", "未生成封面简报，请完成创作流程")
+                _ctrl.emit_log("System", "", "WARNING", "未生成封面简报，请完成创作流程")
 
     except Exception as e:
-        _ctrl._emit_log("System", "", "ERROR", f"导出失败: {e}")
+        _ctrl.emit_log("System", "", "ERROR", f"导出失败: {e}")
 
 
 # ======================================================================
@@ -474,17 +475,18 @@ def _on_viewport_resize() -> None:
 # ======================================================================
 
 def _on_phase_change_from_job(phase_key: str) -> None:
-    """后台任务切换到新阶段时的回调（在后台线程调用，但通过 log queue 触发）。"""
-    # 将在 _poll_logs 中通过检查日志来更新
-    pass
+    """后台任务切换到新阶段时的回调（由 poll_events 在主线程调用）。"""
+    sidebar.update_phase_status(phase_key)
 
 
 def _on_job_done(success: bool) -> None:
-    """后台任务完成时的回调。"""
+    """后台任务完成时的回调（由 poll_events 在主线程调用）。"""
     if success:
-        _ctrl._emit_log("System", "", "SUCCESS", "🎉 创作任务顺利完成")
+        _ctrl.emit_log("System", "", "SUCCESS", "🎉 创作任务顺利完成")
     else:
-        _ctrl._emit_log("System", "", "WARNING", "⚠️ 创作任务被中断")
+        _ctrl.emit_log("System", "", "WARNING", "⚠️ 创作任务被中断")
+    # 刷新编辑器以展示新生成的内容
+    _refresh_all_editors()
 
 
 # ======================================================================
@@ -494,18 +496,24 @@ def _on_job_done(success: bool) -> None:
 def _poll_logs() -> None:
     """从 log_queue 取出所有等待中的日志并更新 GUI。
 
-    此函数在主线程的 render loop 中每帧调用，确保 GUI 更新线程安全。
+    此函数在主线程的 render loop 中每帧调用。通过 LOG_POLL_INTERVAL
+    限流，避免高帧率下空轮询浪费 CPU。
     """
-    try:
-        while True:
-            entry = _ctrl.log_queue.get_nowait()
-            _handle_log_entry(entry)
-    except Exception:
-        pass  # queue.Empty
+    global _last_poll_time
+    now = time.monotonic()
+    if now - _last_poll_time < LOG_POLL_INTERVAL:
+        return
+    _last_poll_time = now
+    _ctrl.poll_events()
 
 
 def _handle_log_entry(entry: GUILogEntry) -> None:
-    """处理一条日志：追加到日志面板 + 更新相关状态。"""
+    """处理一条普通日志：追加到日志面板 + 更新相关状态。
+
+    此函数由 controller.poll_events() 在主线程调用（作为 _on_log 回调），
+    因此可以安全操作 GUI。特殊事件（阶段变更/任务完成）已由 poll_events
+    分发到对应回调，不会到达此处。
+    """
     # 追加到日志面板
     log_panel.append_log(entry)
 
