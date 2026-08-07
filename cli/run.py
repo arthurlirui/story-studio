@@ -30,7 +30,7 @@ def _load_cfg_and_orch():
 
 @app.command("pipeline")
 def run_pipeline(
-    task: str = typer.Argument(..., help="taskfile 名（tasks/ 下，不含 .json）"),
+    task: Optional[str] = typer.Argument(None, help="taskfile 名（tasks/ 下，不含 .json）"),
     variant: Optional[str] = typer.Option(
         None, "--variant", "-V",
         help="仅跑指定 variant（逗号分隔，如 01,03），缺省跑全部",
@@ -56,6 +56,10 @@ def run_pipeline(
                 console.print(f"  • {f.stem}")
         return
 
+    if task is None:
+        console.print("[red]❌ 请提供 taskfile 名（或用 --list 查看可用）[/red]")
+        raise typer.Exit(1)
+
     async def _go():
         # 复用现有 run_all.py 逻辑：直接调其 async main 入口
         import run_all as _run_all
@@ -80,7 +84,7 @@ def run_pipeline(
 
 @app.command("short")
 def run_short(
-    task: str = typer.Argument(..., help="taskfile 名（tasks/short/ 下，不含 .json）"),
+    task: Optional[str] = typer.Argument(None, help="taskfile 名（tasks/short/ 下，不含 .json）"),
     stage: Optional[str] = typer.Option(
         None, "--stage", "-s",
         help="仅跑指定 stage（plan/write/deai）",
@@ -96,6 +100,10 @@ def run_short(
             for f in sorted(d.glob("*.json")):
                 console.print(f"  • {f.stem}")
         return
+
+    if task is None:
+        console.print("[red]❌ 请提供 taskfile 名（或用 --list 查看可用）[/red]")
+        raise typer.Exit(1)
 
     async def _go():
         import sys

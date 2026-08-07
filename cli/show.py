@@ -167,7 +167,7 @@ def show_quality(
     novel: str = typer.Argument(..., help="Job ID 或 knowledge_dir 路径"),
     fmt: str = typer.Option("table", "--format", "-f", help="table | json"),
 ) -> None:
-    """查去看AI化质量面板（每章评分 + verdict）。"""
+    """查看去AI化质量面板（每章评分 + verdict）。"""
     kd, ks = build_knowledge_store(novel)
     if kd is None:
         _fail(novel)

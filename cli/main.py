@@ -87,14 +87,22 @@ from cli import config_cmd as _config  # noqa: E402
 from cli import agents as _agents  # noqa: E402
 from cli import status as _status  # noqa: E402
 from cli import repl as _repl  # noqa: E402
+from cli import show as _show  # noqa: E402
+from cli import health as _health  # noqa: E402
+from cli import short as _short  # noqa: E402
+from cli import bench as _bench  # noqa: E402
 
-app.add_typer(_run.app, name="run", help="🚀 运行生成管线（pipeline/short/stage/polish）")
-app.add_typer(_jobs.app, name="jobs", help="📋 管理后台 Job（list/show/cancel/retry）")
+app.add_typer(_run.app, name="run", help="🚀 运行生成管线（pipeline/short/stage/polish/batch/revise/style）")
+app.add_typer(_jobs.app, name="jobs", help="📋 管理后台 Job（list/show/cancel/retry/tasks）")
 app.add_typer(_novels.app, name="list", help="📚 列出小说/系列/章节")
+app.add_typer(_show.app, name="show", help="📖 查看知识库（outline/world/characters/chapter/cost/quality/research）")
 app.add_typer(_export.app, name="export", help="📦 导出成品（final/covers）")
 app.add_typer(_config.app, name="config", help="⚙️ 查看与编辑配置（get/set/show/path）")
 app.add_typer(_agents.app, name="agents", help="🤖 智能体团队（list/inspect）")
 app.add_typer(_status.app, name="status", help="📊 系统/项目状态", hidden=False)
+app.add_typer(_health.app, name="health", help="🏥 系统诊断（LLM连接/配置校验/知识库检查）")
+app.add_typer(_short.app, name="short", help="✍️ 短篇生成与热榜（generate/trends/genres）")
+app.add_typer(_bench.app, name="bench", help="🔬 LLM 性能基准测试")
 app.add_typer(_repl.app, name="repl", help="💬 交互式 REPL（迁移自 main.py）")
 
 
