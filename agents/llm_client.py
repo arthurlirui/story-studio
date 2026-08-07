@@ -149,6 +149,19 @@ class LLMClient:
                 last_error = e
                 break
 
+            except httpx.TransportError as e:
+                # P1 修复：连接重置/网络抖动等传输层错误（TimeoutException 是
+                # 其子类但已在上方专门处理）原来是落到 generic except 直接判死，
+                # 一次瞬时断连就导致整章失败。改为短退避重试。
+                last_error = e
+                delay = min(2.0 * (2 ** attempt), 30.0)
+                logger.warning(
+                    "Transport error (attempt %d/%d): %s, retry in %.1fs",
+                    attempt + 1, MAX_RETRIES, e, delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+
             except Exception as e:
                 last_error = e
                 logger.error("Unexpected error (attempt %d/%d): %s", attempt + 1, MAX_RETRIES, e)
@@ -170,6 +183,8 @@ class LLMClient:
         last_error: Exception | None = None
 
         for attempt in range(MAX_RETRIES):
+            # 一旦向消费者 yield 过 token 就不能整体重试，否则下游会收到重复文本
+            yielded_any = False
             try:
                 client = self._get_http()
                 async with client.stream(
@@ -211,10 +226,12 @@ class LLMClient:
 
                                 reasoning = delta.get("reasoning")
                                 if reasoning:
+                                    yielded_any = True
                                     yield reasoning
 
                                 content = delta.get("content")
                                 if content:
+                                    yielded_any = True
                                     yield content
 
                             except json.JSONDecodeError:
@@ -223,7 +240,23 @@ class LLMClient:
                         return
 
             except httpx.TimeoutException:
-                logger.warning("Stream timeout (attempt %d/%d)", attempt + 1, MAX_RETRIES)
+                last_error = httpx.TimeoutException("stream timeout")
+                if yielded_any:
+                    # 已向消费者输出部分内容，重试会造成正文重复，只能终止
+                    logger.warning("Stream timeout after partial output (attempt %d/%d), aborting", attempt + 1, MAX_RETRIES)
+                    break
+                logger.warning("Stream timeout before first token (attempt %d/%d), retrying", attempt + 1, MAX_RETRIES)
+                continue
+            except httpx.TransportError as e:
+                # P1 修复：传输层瞬时错误（连接重置、对端断开）原来直接判死；
+                # 未产出 token 时可安全重试，已产出则只能终止避免重复正文
+                last_error = e
+                if yielded_any:
+                    logger.warning("Stream transport error after partial output (attempt %d/%d): %s, aborting", attempt + 1, MAX_RETRIES, e)
+                    break
+                delay = min(2.0 * (2 ** attempt), 30.0)
+                logger.warning("Stream transport error before first token (attempt %d/%d): %s, retry in %.1fs", attempt + 1, MAX_RETRIES, e, delay)
+                await asyncio.sleep(delay)
                 continue
             except Exception as e:
                 last_error = e

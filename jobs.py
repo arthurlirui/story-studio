@@ -148,6 +148,10 @@ class JobRunner:
         # 不会并发编排同一 knowledge_dir，避免 task_plan.json / run_state.json
         # 互相覆盖（P0 修复）。
         self._job_locks: dict[str, asyncio.Lock] = {}
+        # P1 修复：构造时若无运行中的事件循环（如 CLI / 测试 / 脚本直接 new），
+        # asyncio.create_task 会抛 "no running event loop"。此时先记录待恢复的
+        # job id，等submit / start_pending_recoveries 在有循环时再启动。
+        self._pending_recover: list[str] = []
         self._load_index()
         # 自动恢复可恢复的 job（异步启动，不阻塞 __init__）
         self._auto_recover_jobs()
@@ -157,6 +161,7 @@ class JobRunner:
 
         这些 job 崩溃前在 running，但有 task_plan.json，可走 load_plan 断点续跑。
         把状态置回 queued 并启动后台 _run_job（total_chapters=None，从 plan 恢复）。
+        无运行中事件循环时降级为登记待恢复，由 start_pending_recoveries 补启动。
         """
         for jid, job in list(self._jobs.items()):
             if job.status == JOB_RECOVERABLE:
@@ -165,9 +170,29 @@ class JobRunner:
                 job.error = None
                 job.touch()
                 self._save_index()
-                # 启动后台恢复任务（total_chapters=None，_run_job 会走 load_plan）
-                task = asyncio.create_task(self._run_job(job, None))
-                self._tasks[jid] = task
+                self._pending_recover.append(jid)
+        self.start_pending_recoveries()
+
+    def start_pending_recoveries(self) -> None:
+        """在有运行中的事件循环时，启动所有待恢复的 job。
+
+        幂等：无待恢复项或仍无事件循环时不做事。可在 FastAPI lifespan /
+        任何 async 入口（如 submit）里调用。
+        """
+        if not self._pending_recover:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        for jid in self._pending_recover:
+            job = self._jobs.get(jid)
+            if job is None or job.status != JOB_QUEUED:
+                continue
+            # 启动后台恢复任务（total_chapters=None，_run_job 会走 load_plan）
+            task = asyncio.create_task(self._run_job(job, None))
+            self._tasks[jid] = task
+        self._pending_recover.clear()
 
     # ── Index persistence ──────────────────────────────────────
 
@@ -266,6 +291,9 @@ class JobRunner:
         job_dir = self.base_dir / jid
         knowledge_dir = str(job_dir / "knowledge")
         output_dir = str(job_dir / "output")
+
+        # 构造时可能无事件循环，恢复任务被挂起；此处（必在循环中）兜底补启动
+        self.start_pending_recoveries()
 
         job = Job(
             id=jid,

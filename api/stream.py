@@ -143,7 +143,9 @@ async def stream_agent_events(job_id: str, request: Request):
         from agents.worklog import WorkLog
 
         kd = Path(job.knowledge_dir)
-        worklog = WorkLog(kd)
+        # WorkLog 接收的是 JSONL 文件路径而非知识库目录；
+        # 与 orchestrator 写入侧保持一致，否则 read_recent 永远读不到条目
+        worklog = WorkLog(kd / "story" / "agent_worklog.jsonl")
         seen = 0
         while not await request.is_disconnected():
             entries = worklog.read_recent(50)

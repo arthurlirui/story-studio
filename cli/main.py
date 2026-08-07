@@ -136,6 +136,13 @@ def submit(
     asyncio.run(_go())
 
 
+@app.command()
+def gui() -> None:
+    """🖥️ 启动 DearPyGUI 桌面创作界面。"""
+    from gui.app import main as gui_main
+    gui_main()
+
+
 def run() -> None:
     """entry point: ``ss`` 命令实际调用。"""
     app()

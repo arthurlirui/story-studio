@@ -211,8 +211,13 @@ class DeaiEngine:
             "## 待重写段落\n" + "\n---\n".join(rewrite_segments[:5]))
 
         try:
+            from agents.llm_client import LLM_ERROR_PREFIX
+
             response = await self.client.think(prompt)
-            if response and not response.startswith("ERROR"):
+            # 校验 LLMClient 的错误哨兵（"[LLM API error: ...]"）；
+            # 之前查的是 "ERROR" 前缀，永远匹配不上真实哨兵，
+            # 错误文本会被当作重写结果混进正文
+            if response and not response.startswith(LLM_ERROR_PREFIX):
                 # 用 LLM 响应中提取的段落替换对应的原文段
                 rewritten_segs = [s.strip() for s in response.split("\n---\n") if s.strip()]
                 for i, seg in enumerate(rewrite_segments[: len(rewritten_segs)]):

@@ -43,15 +43,27 @@ class _ScriptedLLM:
 
     async def chat(self, *, messages, model, temperature, max_tokens, system):
         prompt = messages[-1]["content"] if messages else ""
-        # system prompt 用来区分 agent 角色
-        sys_lower = (system or "").lower()
+        # 按 system prompt 首行"你是 **角色名"粗体前缀锚定角色。各 agent 的
+        # prompt 正文会互相提及角色名（如 Showrunner 工作流提到"文学顾问"，
+        # ContinuityKeeper 提到"建议Showrunner…"），宽松子串匹配会误路由，
+        # 导致 verdict_schedule 被错误消耗。
+        system = system or ""
 
-        if "scene writer" in sys_lower or "编剧" in (system or ""):
+        if "你是 **场景编剧" in system:
             self.scene_writer_calls += 1
             self.last_scene_prompt = prompt
             return f"第 X 章初稿 v{self.scene_writer_calls}\n\n陈风走在山道上……"
 
-        if "showrunner" in sys_lower or "总编剧" in (system or "") or "评审" in prompt:
+        if "你是 **连续性检查员" in system:
+            return "连续性检查通过。"
+
+        if "你是 **编辑" in system:
+            return f"润色稿：{prompt[:50]}"
+
+        if "你是 **文学顾问" in system:
+            return "本章摘要：主角登场并遭遇首个危机。"
+
+        if "你是 **总策划" in system or "评审" in prompt:
             self.showrunner_calls += 1
             round_idx = self.showrunner_calls - 1
             verdict = (
@@ -60,12 +72,6 @@ class _ScriptedLLM:
                 else "PASS"
             )
             return f"VERDICT: {verdict}\n\n评审意见：第 {round_idx + 1} 轮。"
-
-        if "editor" in sys_lower or "润色" in prompt:
-            return f"润色稿：{prompt[:50]}"
-
-        if "continuity" in sys_lower or "连续性" in prompt:
-            return "连续性检查通过。"
 
         return "（_ScriptedLLM 兜底）"
 

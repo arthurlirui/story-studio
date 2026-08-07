@@ -12,6 +12,7 @@ dependencies = [
 
 [project.scripts]
 ss = "cli.main:app"
+ss-gui = "gui.app:main"
 
 [project.optional-dependencies]
 dev = [
@@ -23,6 +24,9 @@ cli = [
 ]
 api = [
     "sse-starlette>=1.8,<3.0",
+]
+gui = [
+    "dearpygui>=2.0,<3.0",
 ]
 
 [tool.pytest.ini_options]
@@ -37,4 +41,4 @@ build-backend = "setuptools.build_meta"
 # 显式声明包：避免 setuptools flat-layout 自动发现因 series/ skills/ 等数据
 # 目录报 "Multiple top-level packages" 错误。
 py-modules = []
-packages = ["cli", "config", "agents", "deai", "short_story", "tools"]
+packages = ["cli", "config", "agents", "deai", "short_story", "tools", "gui"]
