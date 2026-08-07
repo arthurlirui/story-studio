@@ -13,7 +13,7 @@ from typing import Optional
 
 import typer
 
-from cli._common import console
+from cli._common import console, load_cfg, build_orch
 
 app = typer.Typer(
     name="run",
@@ -24,18 +24,8 @@ app = typer.Typer(
 
 
 def _load_cfg_and_orch():
-    """懒加载 config + orchestrator + client。
-
-    放在函数体内（而非模块顶层），避免 ``ss run --help`` 拉起重模块。
-    """
-    from config import load_config
-    from agents.llm_client import init_client
-    from orchestrator import StoryOrchestrator
-
-    cfg = load_config()
-    client = init_client(cfg.llm_base_url, cfg.llm_api_key, cfg.main_model)
-    orch = StoryOrchestrator(cfg, client=client)
-    return cfg, orch, client
+    """懒加载 config + orchestrator + client（复用 _common.build_orch）。"""
+    return build_orch()
 
 
 @app.command("pipeline")
@@ -67,7 +57,7 @@ def run_pipeline(
         return
 
     async def _go():
-        # 复用现有 run_all.py 逻辑：直接调其 main 入口
+        # 复用现有 run_all.py 逻辑：直接调其 async main 入口
         import run_all as _run_all
         argv = [task]
         if variant:
@@ -81,30 +71,11 @@ def run_pipeline(
         old = sys.argv
         sys.argv = ["run_all.py"] + argv
         try:
-            await _run_all.async_main() if hasattr(_run_all, "async_main") else _run_all.main()
+            await _run_all.main()
         finally:
             sys.argv = old
 
-    try:
-        asyncio.run(_go())
-    except AttributeError:
-        # run_all.main 不是 async，直接同步调用
-        console.print("[yellow]注意：run_all.py 未提供 async_main，将同步执行[/yellow]")
-        import run_all as _run_all
-        argv = [task]
-        if variant:
-            argv += ["--variant", variant]
-        if stage:
-            argv += ["--stage", stage]
-        if dry_run:
-            argv += ["--dry-run"]
-        import sys
-        old = sys.argv
-        sys.argv = ["run_all.py"] + argv
-        try:
-            _run_all.main()
-        finally:
-            sys.argv = old
+    asyncio.run(_go())
 
 
 @app.command("short")
@@ -126,19 +97,22 @@ def run_short(
                 console.print(f"  • {f.stem}")
         return
 
-    import sys
-    argv = ["run_short.py", task]
-    if stage:
-        argv += ["--stage", stage]
-    if dry_run:
-        argv += ["--dry-run"]
-    old = sys.argv
-    sys.argv = argv
-    try:
-        import run_short
-        run_short.main()
-    finally:
-        sys.argv = old
+    async def _go():
+        import sys
+        argv = ["run_short.py", task]
+        if stage:
+            argv += ["--stage", stage]
+        if dry_run:
+            argv += ["--dry-run"]
+        old = sys.argv
+        sys.argv = argv
+        try:
+            import run_short
+            await run_short.main()
+        finally:
+            sys.argv = old
+
+    asyncio.run(_go())
 
 
 @app.command("stage")
