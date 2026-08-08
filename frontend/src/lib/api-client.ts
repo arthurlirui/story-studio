@@ -58,11 +58,11 @@ export async function cancelNovel(jobId: string): Promise<{ job_id: string; stat
   return request(`/novels/${jobId}`, { method: "DELETE" });
 }
 
-export async function runAllTasks(jobId: string): Promise<unknown> {
+export async function runAllTasks(jobId: string): Promise<{ job_id: string; status: string }> {
   return request(`/novels/${jobId}/run-all`, { method: "POST" });
 }
 
-export async function resumeNovel(jobId: string): Promise<unknown> {
+export async function resumeNovel(jobId: string): Promise<{ job_id: string; status: string }> {
   return request(`/novels/${jobId}/resume`, { method: "POST" });
 }
 
@@ -78,7 +78,7 @@ export async function getChapter(jobId: string, chapterNum: number): Promise<Cha
 
 // ── Tasks ──────────────────────────────────────────────────
 
-export async function getTasks(jobId: string): Promise<{ job_id: string; plan: TaskPlan | null; summary?: unknown }> {
+export async function getTasks(jobId: string): Promise<{ job_id: string; plan: TaskPlan | null; summary?: { total: number; done: number; failed: number } }> {
   return request(`/novels/${jobId}/tasks`);
 }
 

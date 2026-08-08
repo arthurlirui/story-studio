@@ -250,26 +250,13 @@ class BatchCoordinator:
         return "\n".join(parts)
 
     def _extract_chapter_outline_local(self, outline: str, chapter_num: int) -> str:
-        """轻量章节大纲提取（与 orchestrator._extract_chapter_outline 同源但内联，
-        避免循环依赖）。orchestrator 调用时会传入更精确的 chapter_outline 覆盖。
+        """轻量章节大纲提取，委托到 agents.utils 的统一实现。
+
+        原内联实现已迁移到 agents.utils.extract_chapter_outline，消除两份正则的漂移风险。
+        orchestrator 调用时会传入更精确的 chapter_outline 覆盖。
         """
-        if not outline:
-            return ""
-        # 匹配 "第N章" / "## N." / "Chapter N" 等开头，截到下一章或末尾
-        patterns = [
-            rf'第\s*{chapter_num}\s*章[^\n]*\n',
-            rf'^##\s*{chapter_num}[.:：\s]',
-            rf'^Chapter\s*{chapter_num}\b',
-        ]
-        for pat in patterns:
-            m = re.search(pat, outline, re.MULTILINE)
-            if m:
-                rest = outline[m.end():]
-                # 截到下一个章节标题
-                nxt = re.search(r'(?:第\s*\d+\s*章|^##\s*\d+|^Chapter\s*\d+)', rest, re.MULTILINE)
-                body = rest[:nxt.start()] if nxt else rest
-                return body.strip()[:_CH_OUTLINE_LIMIT]
-        return ""
+        from agents.utils import extract_chapter_outline
+        return extract_chapter_outline(outline, chapter_num)
 
     @staticmethod
     def _parse_json_block(text: str) -> Any:

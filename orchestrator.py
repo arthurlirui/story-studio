@@ -254,6 +254,10 @@ class StoryOrchestrator:
         # RunState：持久化运行进度 + 成本聚合
         self.job_id: str = new_job_id()
         self.run_cost: dict[str, dict[str, int]] = {}
+        # 成本聚合锁：批次并行写作下多协程并发 _record_usage，用锁保护
+        # run_cost dict 的 setdefault + += 操作（P1 修复：原无锁在单 loop 下
+        # 协程间安全，但若主线程同时读 get_status→_cost_summary 则无保护）。
+        self._cost_lock = asyncio.Lock()
         self._progress_log: list[dict] = []  # 进度日志（断电恢复用，从 run_state.json 恢复）
         self._state_path: Path = Path(self.cfg.knowledge_dir) / "run_state.json"
         self._load_state_from_disk()
@@ -324,22 +328,27 @@ class StoryOrchestrator:
         })
         self._save_state()
 
-    def _record_usage(self, agent: Any) -> None:
-        """从 agent.last_usage 聚合到 run_cost + 持久化。"""
+    async def _record_usage(self, agent: Any) -> None:
+        """从 agent.last_usage 聚合到 run_cost + 持久化。
+
+        使用 _cost_lock 保护 run_cost dict 的并发读写（P1 修复：批次并行写作下
+        多协程并发调用 _record_usage，原 setdefault + += 无锁）。
+        """
         usage = getattr(agent, "last_usage", None)
         if not usage:
             return
         model = getattr(agent, "model", "unknown")
-        bucket = self.run_cost.setdefault(model, {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "calls": 0,
-        })
-        bucket["prompt_tokens"] += int(usage.get("prompt_tokens", 0))
-        bucket["completion_tokens"] += int(usage.get("completion_tokens", 0))
-        bucket["total_tokens"] += int(usage.get("total_tokens", 0))
-        bucket["calls"] += 1
+        async with self._cost_lock:
+            bucket = self.run_cost.setdefault(model, {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "calls": 0,
+            })
+            bucket["prompt_tokens"] += int(usage.get("prompt_tokens", 0))
+            bucket["completion_tokens"] += int(usage.get("completion_tokens", 0))
+            bucket["total_tokens"] += int(usage.get("total_tokens", 0))
+            bucket["calls"] += 1
 
     def _set_phase(self, phase: str) -> None:
         """切换 phase 并持久化。"""
@@ -372,10 +381,18 @@ class StoryOrchestrator:
             self._save_state()
 
     async def _rate_limit_pause(self):
-        """在连续 API 调用之间插入延迟，避免触发限流."""
+        """在连续 API 调用之间插入延迟，避免触发限流.
+
+        延迟通过 cfg.rate_limit_delay 配置（默认 0，让 LLMClient 的 429 退避
+        做唯一限流）。批次并行写作下多协程共享 _call_count，固定 sleep 会串行化
+        拖慢并行（P1 修复：原固定 sleep(3.0) 与 llm_client 的 429 指数退避重复）。
+        """
+        delay = getattr(self.cfg, "rate_limit_delay", 0) or 0
+        if delay <= 0:
+            return
         self._call_count += 1
         if self._call_count > 1:
-            await asyncio.sleep(3.0)  # 3s between calls
+            await asyncio.sleep(delay)
 
     # ── Phase 0a: 调研 ─────────────────────────────────────────
 
@@ -464,7 +481,7 @@ class StoryOrchestrator:
             )
             return f"## 创新亮点生成失败\n\n{e}"
 
-        self._record_usage(self.innovator)
+        await self._record_usage(self.innovator)
 
         await self.worklog.append(
             phase=PHASE_INNOVATE, agent=self.innovator.name,
@@ -892,7 +909,7 @@ class StoryOrchestrator:
             await self._rate_limit_pause()
             chapter_text = await writer.think(scene_prompt, context)
             duration_ms = int((time.time() - t0) * 1000)
-            self._record_usage(writer)
+            await self._record_usage(writer)
             if not chapter_text or chapter_text.startswith(LLM_ERROR_PREFIX):
                 await self.worklog.append(
                     phase=PHASE_WRITING, chapter=chapter_num, batch_id=batch_id,
@@ -925,7 +942,7 @@ class StoryOrchestrator:
                 context,
             )
             duration_ms = int((time.time() - t0) * 1000)
-            self._record_usage(editor)
+            await self._record_usage(editor)
             if not edited or edited.startswith(LLM_ERROR_PREFIX):
                 edited = chapter_text  # 润色失败时退回原稿
             self._log("editor", edited[:200])
@@ -951,7 +968,7 @@ class StoryOrchestrator:
                 context,
             )
             duration_ms = int((time.time() - t0) * 1000)
-            self._record_usage(continuity_keeper)
+            await self._record_usage(continuity_keeper)
             self._log("continuity_keeper", continuity)
             if save_continuity and continuity and not continuity.startswith(LLM_ERROR_PREFIX):
                 self.knowledge.save_continuity_log(continuity)
@@ -976,7 +993,7 @@ class StoryOrchestrator:
                 f"之后空一行再写评审意见。PASS=通过；REVISE=需修订；REJECT=严重偏离需重写。",
             )
             duration_ms = int((time.time() - t0) * 1000)
-            self._record_usage(showrunner)
+            await self._record_usage(showrunner)
             self._log("showrunner", f"Review Ch{chapter_num} round {round_n}: {review[:200]}")
 
             verdict = self._parse_review_verdict(review)
@@ -1069,7 +1086,7 @@ class StoryOrchestrator:
                 f"## 第 {chapter_num} 章正文（节选）\n{excerpt}"
             )
             summary = await advisor.think(prompt)
-            self._record_usage(advisor)
+            await self._record_usage(advisor)
             # 截到 200 字以防 LLM 超长
             if summary and not summary.startswith(LLM_ERROR_PREFIX):
                 self.knowledge.save_chapter_summary(chapter_num, summary[:200])
@@ -1260,14 +1277,24 @@ class StoryOrchestrator:
                 for gate_round in range(gate_rounds):
                     if not conflicts:
                         break
-                    for ch_num, issues in conflicts.items():
-                        # 定向重写：复用串行单章流程（已带 max_rounds 修订），
-                        # build_context 此时能看到同批次其他章的最新摘要
-                        logger.info("融合门重写第 %d 章（轮 %d）: %s",
-                                    ch_num, gate_round + 1, issues)
-                        rewrite_result = await self.phase_writing(ch_num)
+                    # P1 修复：冲突章并行重写，且用独立 agent 实例
+                    # （原逐章串行 + 用 self.scene_writers[0] 等共享实例，
+                    #   共享 _conversation_history 会被重写污染）
+                    conflict_chapters = list(conflicts.items())
+                    rewrite_tasks = [
+                        self._rewrite_chapter_with_fresh_agents(
+                            ch_num, issues, gate_round, batch_id, outline
+                        )
+                        for ch_num, issues in conflict_chapters
+                    ]
+                    rewrite_results = await asyncio.gather(*rewrite_tasks, return_exceptions=True)
+                    for r in rewrite_results:
+                        if isinstance(r, Exception):
+                            logger.exception("融合门重写异常: %s", r)
+                            continue
+                        ch_num, rewrite_result, issues, gr = r
                         chapter_results[ch_num] = rewrite_result + (
-                            f"\n\n---\n\n## 🔁 融合门重写（轮 {gate_round + 1}）\n"
+                            f"\n\n---\n\n## 🔁 融合门重写（轮 {gr + 1}）\n"
                             f"冲突原因: {'; '.join(issues)}"
                         )
                     # 再跑一次融合门看是否仍有冲突
@@ -1291,6 +1318,64 @@ class StoryOrchestrator:
         output_parts.extend(error_parts)
 
         return "\n\n---\n\n".join(output_parts)
+
+    async def _rewrite_chapter_with_fresh_agents(
+        self,
+        ch_num: int,
+        issues: list[str],
+        gate_round: int,
+        batch_id: str | None,
+        outline: str,
+    ) -> tuple[int, str, list[str], int]:
+        """融合门冲突章定向重写，使用独立 agent 实例避免共享 _conversation_history 污染。
+
+        与 phase_writing 不同，这里构造独立的 writer/editor/continuity/showrunner/
+        literary_advisor 实例，与批次内并行写作的策略一致（P1 修复：原用
+        self.scene_writers[0] 等共享实例，_conversation_history 会被重写污染）。
+
+        Returns:
+            (ch_num, rewrite_result, issues, gate_round)
+        """
+        logger.info("融合门重写第 %d 章（轮 %d）: %s", ch_num, gate_round + 1, issues)
+        self._set_phase(PHASE_WRITING)
+        self.current_chapter = ch_num
+
+        context = self.knowledge.build_context(ch_num, max_chars=self.cfg.max_context_chars)
+        ch_outline = self._extract_chapter_outline(outline, ch_num)
+
+        # 选择一个可用的 writer（轮询分配，避免总是用同一个）
+        writer = self.scene_writers[(ch_num - 1) % len(self.scene_writers)]
+
+        result = await self._write_chapter_with_revisions(
+            writer=writer,
+            editor=Editor(
+                "编辑", "Editor", "文字润色",
+                self.client, model=self._agent_model("editor", "light"),
+                temperature=0.5,
+            ),
+            continuity_keeper=ContinuityKeeper(
+                "连续性检查员", "Continuity Keeper", "一致性检查",
+                self.client, model=self._agent_model("continuity_keeper", "light"),
+                temperature=0.4,
+            ),
+            showrunner=Showrunner(
+                "总策划", "Showrunner", "主持创作流程, 分配任务, 评审产出",
+                self.client, model=self._agent_model("showrunner", "main"),
+                temperature=0.6,
+            ),
+            literary_advisor=LiteraryAdvisor(
+                "文学顾问", "Literary Advisor", "文学技巧建议",
+                self.client, model=self._agent_model("literary_advisor", "light"),
+                temperature=0.7,
+            ),
+            chapter_num=ch_num,
+            context=context,
+            chapter_outline=ch_outline,
+            save_continuity=True,
+            save_state_on_pass=True,
+            batch_id=batch_id,
+        )
+        return ch_num, result, issues, gate_round
 
     # ── Phase 5: 完稿 ──────────────────────────────────────────
 
@@ -1327,7 +1412,7 @@ class StoryOrchestrator:
                     "请对整个作品做最后一轮全文润色。关注整体文风统一。\n\n" + edit_base_text,
                     context,
                 )
-                self._record_usage(self.editor)
+                await self._record_usage(self.editor)
                 if not final_edit or final_edit.startswith(LLM_ERROR_PREFIX):
                     final_edit = full_text  # 润色失败退回原稿
                 self._log("editor", f"Final edit complete (round {round_n})")
@@ -1338,7 +1423,7 @@ class StoryOrchestrator:
                     "请对全文做最终连续性检查。\n\n" + final_edit[:5000],
                     context,
                 )
-                self._record_usage(self.continuity_keeper)
+                await self._record_usage(self.continuity_keeper)
                 self._log("continuity_keeper", final_cont)
 
                 # Final approval — 可附加项目专属评审标准
@@ -1353,7 +1438,7 @@ class StoryOrchestrator:
                     review_prompt += f"## 评审标准\n{review_criteria}\n\n"
                 review_prompt += f"## 作品正文（节选）\n{final_edit[:5000]}"
                 final_review = await self.showrunner.think(review_prompt, context)
-                self._record_usage(self.showrunner)
+                await self._record_usage(self.showrunner)
                 self._log("showrunner", f"Final review (round {round_n}): {final_review[:200]}")
 
                 final_verdict = self._parse_review_verdict(final_review)
@@ -1802,38 +1887,11 @@ class StoryOrchestrator:
     def _extract_chapter_outline(self, outline: str, chapter_num: int) -> str:
         """从大纲中提取指定章节的内容.
 
-        匹配 "第X章" / "## X." / "Chapter X" 三种标记，截取到下一个章节标记为止。
-        注意: 章号用边界断言，避免 "第1章" 误匹配 "第11章"。
+        委托到 agents.utils.extract_chapter_outline 的统一实现，
+        消除与 coordinator._extract_chapter_outline_local 的代码重复。
         """
-        if not outline:
-            return ""
-
-        cn = self._num_to_cn(chapter_num)
-        candidates = [
-            rf'第\s*{chapter_num}\s*章',
-            rf'##\s*{chapter_num}\s*[\.\、]',
-            rf'Chapter\s*{chapter_num}\b',
-            rf'第\s*{cn}\s*章',
-        ]
-        # 下一章节标记的统一正则（数字或中文数字），支持 "## 第N章" 形式
-        next_pat = re.compile(
-            r'\n(?:##\s*)?第\s*\d+\s*章'
-            r'|\n##\s*\d+\s*[\.\、]'
-            r'|\n##\s*第\s*[一二三四五六七八九十]+\s*章'
-            r'|\nChapter\s*\d+\b'
-            r'|\n第\s*[一二三四五六七八九十]+\s*章'
-        )
-
-        for pat in candidates:
-            m = re.search(pat, outline)
-            if not m:
-                continue
-            start = m.start()
-            rest = outline[start:]
-            nxt = next_pat.search(rest[1:])  # 跳过开头的本章节标记
-            end = (1 + nxt.start()) if nxt else len(rest)
-            return rest[:end].strip()[:1500]
-        return ""
+        from agents.utils import extract_chapter_outline
+        return extract_chapter_outline(outline, chapter_num)
 
     @staticmethod
     def _num_to_cn(n: int) -> str:

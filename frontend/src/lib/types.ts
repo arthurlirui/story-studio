@@ -75,7 +75,7 @@ export interface TaskPlan {
 }
 
 export interface CostSummary {
-  by_model: Record<string, { prompt: number; completion: number; total: number; calls: number }>;
+  by_model: Record<string, { prompt_tokens: number; completion_tokens: number; total_tokens: number; calls: number }>;
   total_calls: number;
   total_tokens: number;
 }

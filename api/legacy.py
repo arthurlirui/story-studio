@@ -52,17 +52,13 @@ async def _build_orch_for_job(job):
     否则会泄漏 httpx.AsyncClient。返回 (orch, client)。
     """
     from orchestrator import StoryOrchestrator
-    from agents.llm_client import LLMClient
+    from cli._common import create_llm_client
 
     runner = get_runner()
     cfg = copy.deepcopy(runner.cfg)
     cfg.knowledge_dir = job.knowledge_dir
     cfg.output_dir = job.output_dir
-    client = LLMClient(
-        base_url=cfg.llm_base_url,
-        api_key=cfg.llm_api_key,
-        default_model=cfg.main_model,
-    )
+    client = create_llm_client(cfg)
     orch = StoryOrchestrator(cfg, client=client)
     if job.project_name:
         orch.project_name = job.project_name

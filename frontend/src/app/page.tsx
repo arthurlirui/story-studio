@@ -22,28 +22,59 @@ import {
 import { listNovels, checkHealth } from "@/lib/api-client";
 import { STATUS_LABELS, PHASE_LABELS, type Job } from "@/lib/types";
 
+function safeProgress(progress: [number, number] | undefined): [number, number] {
+  if (!progress || !Array.isArray(progress) || progress.length < 2) return [0, 0];
+  return [progress[0] || 0, progress[1] || 0];
+}
+
 export default function DashboardPage() {
   const [novels, setNovels] = useState<Job[]>([]);
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+
     async function load() {
-      try {
-        const [novelsResp, ok] = await Promise.all([listNovels(), checkHealth()]);
-        setNovels(novelsResp.novels);
-        setHealthy(ok);
-      } catch (e) {
-        console.error(e);
-        setHealthy(false);
-      } finally {
-        setLoading(false);
+      // P1 修复：用 Promise.allSettled 替代 Promise.all，
+      // 避免一个请求失败导致另一个结果丢失。
+      const [novelsResult, healthResult] = await Promise.allSettled([
+        listNovels(),
+        checkHealth(),
+      ]);
+
+      if (novelsResult.status === "fulfilled") {
+        setNovels(novelsResult.value.novels);
+        setError(null);
+      } else {
+        setError(novelsResult.reason instanceof Error ? novelsResult.reason.message : "加载失败");
       }
+
+      if (healthResult.status === "fulfilled") {
+        setHealthy(healthResult.value);
+      } else {
+        setHealthy(false);
+      }
+
+      setLoading(false);
     }
+
     load();
-    const timer = setInterval(load, 5000);
-    return () => clearInterval(timer);
-  }, []);
+
+    // P1 修复：条件轮询 — 只有有运行中的 Job 时才持续轮询，
+    // 否则降低频率（30s）避免无意义请求。
+    const startPolling = () => {
+      if (timer) clearInterval(timer);
+      const hasRunning = novels.some((n) => n.status === "running");
+      timer = setInterval(load, hasRunning ? 5000 : 30000);
+    };
+    startPolling();
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [novels]);
 
   const running = novels.filter((n) => n.status === "running").length;
   const succeeded = novels.filter((n) => n.status === "succeeded").length;
@@ -53,10 +84,17 @@ export default function DashboardPage() {
     <div className="flex-1 space-y-6 p-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">仪表盘</h1>
-        <Badge variant={healthy ? "default" : "destructive"}>
+        <Badge variant={healthy ? "default" : "destructive"} aria-label={healthy ? "后端在线" : "后端离线"}>
           {healthy === null ? "检测中..." : healthy ? "后端在线" : "后端离线"}
         </Badge>
       </div>
+
+      {/* 错误提示 */}
+      {error && (
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive" role="alert">
+          ⚠️ {error}
+        </div>
+      )}
 
       {/* 统计卡片 */}
       <div className="grid gap-4 md:grid-cols-4">
@@ -70,11 +108,13 @@ export default function DashboardPage() {
       <Card>
         <CardHeader>
           <CardTitle>项目列表</CardTitle>
-          <CardDescription>所有小说生成任务（每 5 秒自动刷新）</CardDescription>
+          <CardDescription>所有小说生成任务（有运行中任务时每 5 秒自动刷新）</CardDescription>
         </CardHeader>
         <CardContent>
           {loading ? (
             <p className="text-sm text-muted-foreground">加载中...</p>
+          ) : error && novels.length === 0 ? (
+            <p className="text-sm text-destructive">加载失败：{error}</p>
           ) : novels.length === 0 ? (
             <div className="text-center py-8">
               <p className="text-sm text-muted-foreground mb-4">暂无项目</p>
@@ -97,40 +137,43 @@ export default function DashboardPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {novels.map((n) => (
-                  <TableRow key={n.id}>
-                    <TableCell className="font-medium">
-                      {n.project_name || "(未命名)"}
-                    </TableCell>
-                    <TableCell>
-                      <StatusBadge status={n.status} />
-                    </TableCell>
-                    <TableCell>{PHASE_LABELS[n.phase] || n.phase}</TableCell>
-                    <TableCell>
-                      {n.progress[1] > 0 ? (
-                        <div className="flex items-center gap-2">
-                          <Progress
-                            value={(n.progress[0] / n.progress[1]) * 100}
-                            className="h-2"
-                          />
-                          <span className="text-xs text-muted-foreground">
-                            {n.progress[0]}/{n.progress[1]}
-                          </span>
-                        </div>
-                      ) : (
-                        "-"
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Link
-                        href={`/novels/${n.id}`}
-                        className="text-sm text-primary hover:underline"
-                      >
-                        查看
-                      </Link>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {novels.map((n) => {
+                  const [done, total] = safeProgress(n.progress);
+                  return (
+                    <TableRow key={n.id}>
+                      <TableCell className="font-medium">
+                        {n.project_name || "(未命名)"}
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge status={n.status} />
+                      </TableCell>
+                      <TableCell>{PHASE_LABELS[n.phase] || n.phase}</TableCell>
+                      <TableCell>
+                        {total > 0 ? (
+                          <div className="flex items-center gap-2">
+                            <Progress
+                              value={(done / total) * 100}
+                              className="h-2"
+                            />
+                            <span className="text-xs text-muted-foreground">
+                              {done}/{total}
+                            </span>
+                          </div>
+                        ) : (
+                          "-"
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Link
+                          href={`/novels/${n.id}`}
+                          className="text-sm text-primary hover:underline"
+                        >
+                          查看
+                        </Link>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           )}

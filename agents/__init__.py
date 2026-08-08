@@ -13,7 +13,7 @@ from agents.continuity import ContinuityKeeper
 from agents.title_designer import TitleDesigner
 from agents.hooker import Hooker
 from agents.climax_designer import ClimaxDesigner
-from agents.ollama_client import OllamaClient, client as ollama_client
+from agents.ollama_client import OllamaClient
 from agents.llm_client import LLMClient, init_client as init_llm_client
 from agents.knowledge import KnowledgeStore, create_knowledge_store
 
@@ -28,6 +28,16 @@ from agents.web_search import (
 from agents.topic_researcher import TopicResearcher, DEFAULT_TOPICS
 from agents.innovator import Innovator
 
+
+def get_ollama_client(**kwargs) -> OllamaClient:
+    """懒加载 OllamaClient 实例。
+
+    原 __init__.py 在模块导入时就实例化 OllamaClient（可能尝试连接本地 Ollama），
+    即使用 LLM 后端时也付出代价。改为按需创建。
+    """
+    return OllamaClient(**kwargs)
+
+
 __all__ = [
     "Agent",
     "Showrunner",
@@ -41,7 +51,7 @@ __all__ = [
     "TitleDesigner",
     "Hooker",
     "ClimaxDesigner",
-    "OllamaClient", "ollama_client",
+    "OllamaClient", "get_ollama_client",
     "LLMClient", "init_llm_client",
     "KnowledgeStore", "create_knowledge_store",
     "StylePolisher", "create_style_polisher", "STYLE_REGISTRY", "list_styles",

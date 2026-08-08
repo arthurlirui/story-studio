@@ -10,14 +10,16 @@ import { STATUS_LABELS, PHASE_LABELS, type Job } from "@/lib/types";
 export default function NovelsPage() {
   const [novels, setNovels] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
       try {
         const resp = await listNovels();
         setNovels(resp.novels);
+        setError(null);
       } catch (e) {
-        console.error(e);
+        setError(e instanceof Error ? e.message : "加载失败");
       } finally {
         setLoading(false);
       }
@@ -36,6 +38,8 @@ export default function NovelsPage() {
 
       {loading ? (
         <p className="text-sm text-muted-foreground">加载中...</p>
+      ) : error ? (
+        <p className="text-sm text-destructive">加载失败：{error}</p>
       ) : novels.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">

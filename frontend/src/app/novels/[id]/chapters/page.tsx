@@ -15,14 +15,16 @@ export default function ChaptersPage({
   const { id } = use(params);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
       try {
         const resp = await listChapters(id);
         setChapters(resp.chapters);
+        setError(null);
       } catch (e) {
-        console.error(e);
+        setError(e instanceof Error ? e.message : "加载失败");
       } finally {
         setLoading(false);
       }
@@ -44,6 +46,8 @@ export default function ChaptersPage({
 
       {loading ? (
         <p className="text-sm text-muted-foreground">加载中...</p>
+      ) : error ? (
+        <p className="text-sm text-destructive">加载失败：{error}</p>
       ) : chapters.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">
@@ -64,6 +68,7 @@ export default function ChaptersPage({
                     key={c.chapter}
                     href={`/novels/${id}/chapters/${c.chapter}`}
                     className="group relative"
+                    aria-label={`第${c.chapter}章 ${c.title || "无标题"}，去AI分: ${c.deai_score ?? "无评分"}`}
                     title={`第${c.chapter}章 · ${c.title || "无标题"} · 去AI分: ${c.deai_score ?? "N/A"}`}
                   >
                     <div

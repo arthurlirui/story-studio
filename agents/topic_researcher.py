@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -136,7 +137,10 @@ class TopicResearcher(Agent):
                 report = await self.think(prompt)
                 # C2 修复：每次 think() 后立即上报 usage，避免后续 think() 覆盖 last_usage
                 if on_usage is not None:
-                    on_usage(self)
+                    result = on_usage(self)
+                    # 支持异步回调（_record_usage 是 async method）
+                    if asyncio.iscoroutine(result):
+                        await result
             except Exception as e:
                 logger.exception("TopicResearcher: %s 综合报告失败: %s", slug, e)
                 # M8 修复：失败时不写错误占位符到 KB（避免污染下游 build_context）

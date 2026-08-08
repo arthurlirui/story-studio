@@ -8,15 +8,17 @@ from typing import Callable
 import dearpygui.dearpygui as dpg
 
 
-# 阶段常量（与 orchestrator_state 保持一致）
-PHASE_IDLE = "idle"
-PHASE_RESEARCH = "research"
-PHASE_INNOVATE = "innovate"
-PHASE_PLANNING = "planning"
-PHASE_BUILDING = "building"
-PHASE_OUTLINING = "outlining"
-PHASE_WRITING = "writing"
-PHASE_COMPLETE = "complete"
+# 阶段常量 — 从 orchestrator_state 导入（P1 修复：消除双源维护风险）
+from orchestrator_state import (
+    PHASE_IDLE,
+    PHASE_RESEARCH,
+    PHASE_INNOVATE,
+    PHASE_PLANNING,
+    PHASE_BUILDING,
+    PHASE_OUTLINING,
+    PHASE_WRITING,
+    PHASE_COMPLETE,
+)
 
 PHASE_LABELS: dict[str, str] = {
     PHASE_IDLE: "空闲",

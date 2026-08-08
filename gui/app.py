@@ -75,6 +75,7 @@ def main() -> None:
         dpg.render_dearpygui_frame()
 
     # 9. 清理
+    _ctrl.shutdown()
     dpg.destroy_context()
 
 
@@ -282,7 +283,7 @@ def _on_save_chapter() -> None:
 def _on_save_research() -> None:
     topic = editor.get_selected_research()
     if topic:
-        _ctrl.emit_log("System", "", "INFO", f"💾 研究 [{topic}] 保存（需实现 save_research）")
+        _ctrl.save_research(topic, editor.get_research_text())
 
 
 def _on_save_all() -> None:

@@ -10,7 +10,7 @@ import sys
 import typer
 from rich.panel import Panel
 
-from cli._common import console, load_cfg
+from cli._common import console, load_cfg, create_llm_client
 
 app = typer.Typer(
     name="health",
@@ -21,8 +21,12 @@ app = typer.Typer(
 
 
 @app.callback(invoke_without_command=True)
-def health() -> None:
+def health(ctx: typer.Context) -> None:
     """全面诊断：LLM 连接 + 配置校验 + 知识库目录。"""
+
+    # 若有子命令被调用（如 ss health models），跳过诊断回调，让子命令执行
+    if ctx.invoked_subcommand is not None:
+        return
 
     results: list[tuple[str, bool, str]] = []
 
@@ -52,11 +56,7 @@ def health() -> None:
     if cfg.backend == "llm":
         try:
             import asyncio
-            from agents.llm_client import LLMClient
-            client = LLMClient(
-                base_url=cfg.llm_base_url, api_key=cfg.llm_api_key,
-                default_model=cfg.main_model,
-            )
+            client = create_llm_client(cfg)
             ok = asyncio.run(client.check_health())
             asyncio.run(client.aclose())
             if ok:
@@ -142,11 +142,7 @@ def health_models() -> None:
     cfg = load_cfg()
     try:
         if cfg.backend == "llm":
-            from agents.llm_client import LLMClient
-            client = LLMClient(
-                base_url=cfg.llm_base_url, api_key=cfg.llm_api_key,
-                default_model=cfg.main_model,
-            )
+            client = create_llm_client(cfg)
         elif cfg.backend == "ollama":
             from agents.ollama_client import OllamaClient
             client = OllamaClient(host=cfg.ollama_host)

@@ -1,19 +1,23 @@
 """``ss run`` - 运行生成管线。
 
 子命令：
-- ``ss run pipeline``  替代 run_all.py（长篇系列任务，按 taskfile 跑多 variant + 5 stage）
-- ``ss run short``     替代 run_short.py（短篇，plan -> write -> deai）
+- ``ss run pipeline``  长篇系列管线（直接调用 pipeline_core，无 sys.argv hack）
+- ``ss run short``     短篇管线（直接调用 short_core，无 sys.argv hack）
 - ``ss run stage``     单 phase（research/innovate/.../complete）
 - ``ss run polish``    单章去AI化（deai polish）
+- ``ss run batch``     批量并行写作
+- ``ss run revise``    重写单章
+- ``ss run style``     文学风格润色
 """
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Optional
 
 import typer
 
-from cli._common import console, load_cfg, build_orch
+from cli._common import console, load_cfg, build_orch, create_llm_client
 
 app = typer.Typer(
     name="run",
@@ -21,11 +25,6 @@ app = typer.Typer(
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
-
-
-def _load_cfg_and_orch():
-    """懒加载 config + orchestrator + client（复用 _common.build_orch）。"""
-    return build_orch()
 
 
 @app.command("pipeline")
@@ -42,14 +41,13 @@ def run_pipeline(
     dry_run: bool = typer.Option(False, "--dry-run", help="只打印计划不实际调用 LLM"),
     list_tasks: bool = typer.Option(False, "--list", "-l", help="列出可用 taskfile 后退出"),
 ) -> None:
-    """长篇系列管线（替代 run_all.py）。
+    """长篇系列管线。
 
     读取 ``tasks/<task>.json``，按 variant 顺序执行 5-stage 管线
     （summaries -> polish_outline -> write_chapters -> deai -> export），
     支持断点续跑（.task_progress.json）。
     """
     if list_tasks:
-        from pathlib import Path
         tasks_dir = Path("tasks")
         if tasks_dir.exists():
             for f in sorted(tasks_dir.glob("*.json")):
@@ -60,26 +58,20 @@ def run_pipeline(
         console.print("[red]❌ 请提供 taskfile 名（或用 --list 查看可用）[/red]")
         raise typer.Exit(1)
 
-    async def _go():
-        # 复用现有 run_all.py 逻辑：直接调其 async main 入口
-        import run_all as _run_all
-        argv = [task]
-        if variant:
-            argv += ["--variant", variant]
-        if stage:
-            argv += ["--stage", stage]
-        if dry_run:
-            argv += ["--dry-run"]
-        # run_all.py 用 argparse 解析 sys.argv，这里临时替换
-        import sys
-        old = sys.argv
-        sys.argv = ["run_all.py"] + argv
-        try:
-            await _run_all.main()
-        finally:
-            sys.argv = old
+    # P0 修复：直接调用 pipeline_core 的结构化 API，不再 sys.argv hack
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    asyncio.run(_run_pipeline_core(task, variant, stage, dry_run))
 
-    asyncio.run(_go())
+
+async def _run_pipeline_core(task: str, variant: str | None, stage: str | None, dry_run: bool):
+    """直接调用 pipeline_core，替代 sys.argv hack。"""
+    from cli.pipeline_core import run_pipeline as _run
+    await _run(task, variant=variant, stage=stage, dry_run=dry_run)
 
 
 @app.command("short")
@@ -91,36 +83,40 @@ def run_short(
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="只打印计划不实际调用 LLM"),
     list_tasks: bool = typer.Option(False, "--list", "-l", help="列出可用短篇 taskfile"),
+    batch: Optional[str] = typer.Option(None, "--batch", help="批量任务文件 (yaml/json)"),
 ) -> None:
-    """短篇管线（替代 run_short.py）。plan -> write -> deai 三阶段。"""
+    """短篇管线。plan -> write -> deai 三阶段。"""
     if list_tasks:
-        from pathlib import Path
-        d = Path("tasks/short")
-        if d.exists():
-            for f in sorted(d.glob("*.json")):
-                console.print(f"  • {f.stem}")
+        from cli.short_core import list_short_tasks
+        list_short_tasks()
+        return
+
+    if batch:
+        import logging
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+        asyncio.run(_run_short_batch(batch))
         return
 
     if task is None:
         console.print("[red]❌ 请提供 taskfile 名（或用 --list 查看可用）[/red]")
         raise typer.Exit(1)
 
-    async def _go():
-        import sys
-        argv = ["run_short.py", task]
-        if stage:
-            argv += ["--stage", stage]
-        if dry_run:
-            argv += ["--dry-run"]
-        old = sys.argv
-        sys.argv = argv
-        try:
-            import run_short
-            await run_short.main()
-        finally:
-            sys.argv = old
+    # P0 修复：直接调用 short_core 的结构化 API，不再 sys.argv hack
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+    asyncio.run(_run_short_core(task, stage, dry_run))
 
-    asyncio.run(_go())
+
+async def _run_short_core(task: str, stage: str | None, dry_run: bool):
+    """直接调用 short_core，替代 sys.argv hack。"""
+    from cli.short_core import run_short_task as _run
+    await _run(task, target_stage=stage, dry_run=dry_run)
+
+
+async def _run_short_batch(batch_file: str):
+    """直接调用 short_core 批量，替代 sys.argv hack。"""
+    from cli.short_core import run_short_batch as _run
+    await _run(batch_file)
 
 
 @app.command("stage")
@@ -138,7 +134,7 @@ def run_stage(
         raise typer.BadParameter(f"未知 phase: {phase}，可选: {', '.join(sorted(valid))}")
 
     async def _go():
-        cfg, orch, client = _load_cfg_and_orch()
+        cfg, orch, client = build_orch()
         try:
             method = getattr(orch, f"phase_{phase}", None)
             if method is None:
@@ -165,20 +161,11 @@ def run_polish(
     chapter: int = typer.Argument(..., min=1, help="章节号"),
     prompt_version: str = typer.Option("v4", "--prompt-version", "-p", help="polish prompt 版本 v1-v4"),
 ) -> None:
-    """单章去AI化（deai polish）。
-
-    用 polish_prompt_v4.txt（可指定 v1-v3）对指定章节做去AI化润色，
-    输出到 output/polished/chapter_NNN.md。
-    """
+    """单章去AI化（deai polish）。"""
 
     async def _go():
-        cfg, orch, client = _load_cfg_and_orch()
+        cfg, orch, client = build_orch()
         try:
-            # 复用 run_all.run_deai 的核心逻辑
-            import run_all
-            from pathlib import Path
-
-            # 选择 prompt 文件
             prompt_file = Path(f"polish_prompt_{prompt_version}.txt")
             if not prompt_file.exists():
                 prompt_file = Path("polish_prompt_v4.txt")
@@ -194,7 +181,6 @@ def run_polish(
                 raise typer.Exit(1)
 
             console.print(f"[cyan]🔄 去AI化第 {chapter} 章（prompt={prompt_file.name}）...[/cyan]")
-            # 直接调 orchestrator 的 client 做 polish（与 run_all.run_deai 同逻辑）
             template = prompt_file.read_text(encoding="utf-8")
             content = chap_path.read_text(encoding="utf-8")
             polished = await client.chat(
@@ -219,14 +205,10 @@ def run_batch(
     start: int = typer.Option(..., "--start", "-s", min=1, help="起始章节号"),
     count: int = typer.Option(3, "--count", "-c", min=1, max=20, help="批量章节数"),
 ) -> None:
-    """批量并行写作（调用 phase_writing_batch）。
-
-    从第 ``start`` 章起，一次并行生成 ``count`` 章。
-    需要已完成大纲阶段（outlining）。
-    """
+    """批量并行写作（调用 phase_writing_batch）。"""
 
     async def _go():
-        cfg, orch, client = _load_cfg_and_orch()
+        cfg, orch, client = build_orch()
         try:
             console.print(f"[cyan]🚀 批量写作: 第 {start}~{start + count - 1} 章（{count} 章并行）...[/cyan]")
             result = await orch.phase_writing_batch(start, count)
@@ -242,14 +224,10 @@ def run_batch(
 def run_revise(
     chapter: int = typer.Argument(..., min=1, help="要重写的章节号"),
 ) -> None:
-    """重写单个章节（带自动修订循环）。
-
-    调用 ``phase_writing(chapter)``，触发该章的完整写作 + 自动修订流程。
-    适用于对已生成章节不满意时重新生成。
-    """
+    """重写单个章节（带自动修订循环）。"""
 
     async def _go():
-        cfg, orch, client = _load_cfg_and_orch()
+        cfg, orch, client = build_orch()
         try:
             console.print(f"[cyan]✏️ 重写第 {chapter} 章...[/cyan]")
             result = await orch.phase_writing(chapter)
@@ -267,11 +245,7 @@ def run_style(
     style: str = typer.Option("moyan", "--style", "-s", help="风格名（如 moyan）"),
     list_styles: bool = typer.Option(False, "--list", "-l", help="列出可用风格后退出"),
 ) -> None:
-    """文学风格润色（本地 Qwen + LoRA）。
-
-    用指定风格的 LoRA adapter 对章节文本进行风格化润色。
-    需要本地推理环境（LocalInferenceClient + LoRA adapter）。
-    """
+    """文学风格润色（本地 Qwen + LoRA）。"""
 
     if list_styles:
         from agents.style_polisher import STYLE_REGISTRY
@@ -293,10 +267,10 @@ def run_style(
         raise typer.Exit(1)
 
     async def _go():
-        cfg, orch, client = _load_cfg_and_orch()
+        cfg, orch, client = build_orch()
         try:
             from pathlib import Path
-            from agents.style_polisher import STYLE_REGISTRY, StylePolisher, create_style_polisher
+            from agents.style_polisher import STYLE_REGISTRY, create_style_polisher
 
             if style not in STYLE_REGISTRY:
                 console.print(f"[red]❌ 未知风格 {style}，可用: {', '.join(STYLE_REGISTRY.keys())}[/red]")

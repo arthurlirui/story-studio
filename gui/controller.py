@@ -2,7 +2,7 @@
 GUIController — 异步桥接层，连接 DearPyGUI 主线程与 StoryOrchestrator 后台任务。
 
 架构:
-  主线程 (DearPyGUI render loop)      后台线程 (asyncio event loop)
+  主线程 (DearPyGUI render loop)      后台线程 (持久 asyncio event loop)
        │                                    │
        │── start_job(brief, ...) ───►       │
        │                                    │── orchestrator.phase_research()
@@ -12,7 +12,9 @@ GUIController — 异步桥接层，连接 DearPyGUI 主线程与 StoryOrchestra
        │◄── poll_logs() ────────────────────│
        │                                    │
        │── dearpygui.set_value()            │
-       │   (更新日志面板、状态等)             │
+
+P0 修复：使用单持久 event loop（而非每 Job 新建 loop），避免 httpx.AsyncClient
+和 WorkLog._lock 跨 loop 复用导致第二次运行必崩。
 """
 from __future__ import annotations
 
@@ -54,17 +56,25 @@ class GUILogEntry:
 class GUIController:
     """GUI 与 StoryOrchestrator 之间的桥接控制器。
 
-    所有 orchestrator 操作在后台线程的 asyncio 事件循环中执行，
+    所有 orchestrator 操作在后台线程的持久 asyncio 事件循环中执行，
     结果通过 log_queue 传回主线程。
+
+    P0 修复：后台线程持有一个**持久的** asyncio event loop（进程生命周期内不关闭），
+    所有 Job 协程通过 run_coroutine_threadsafe 提交到该 loop。
+    这确保 LLMClient._http 和 WorkLog._lock 始终绑定同一个 loop，
+    避免"每 Job 新建+关闭 loop"导致的跨 loop 复用崩溃。
     """
 
     def __init__(self):
         self.log_queue: queue.Queue[GUILogEntry] = queue.Queue()
 
-        # 后台线程相关
+        # 后台线程 + 持久 event loop（P0 修复：不再每 Job 新建 loop）
         self._job_thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop_event = threading.Event()
+        self._current_task: asyncio.Task | None = None  # 当前运行的 asyncio.Task（用于 cancel）
+        # 状态读取锁：保护主线程读 orchestrator 状态与后台线程写之间的竞态
+        self._state_lock = threading.Lock()
 
         # 项目组件（由 init_project() 或外部注入）
         self.orchestrator: Any = None   # StoryOrchestrator 实例
@@ -75,6 +85,49 @@ class GUIController:
         self._on_log: Callable[[GUILogEntry], None] | None = None
         self._on_phase_change: Callable[[str], None] | None = None
         self._on_job_done: Callable[[bool], None] | None = None
+
+    # ------------------------------------------------------------------
+    # 后台 loop 生命周期
+    # ------------------------------------------------------------------
+
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        """确保后台线程 + 持久 event loop 已启动，返回 loop 引用。"""
+        if self._loop is not None and not self._loop.is_closed():
+            return self._loop
+        # 启动后台线程，在其中创建并运行 event loop
+        ready = threading.Event()
+        loop_holder: list[Any] = [None]
+
+        def _run_loop():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop_holder[0] = loop
+            ready.set()
+            try:
+                loop.run_forever()
+            finally:
+                # 清理未完成的任务
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.close()
+
+        self._job_thread = threading.Thread(target=_run_loop, daemon=True, name="gui-async")
+        self._job_thread.start()
+        ready.wait(timeout=5.0)
+        self._loop = loop_holder[0]
+        return self._loop
+
+    def shutdown(self) -> None:
+        """关闭后台 loop（应用退出时调用）。"""
+        if self._loop is not None and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._job_thread is not None:
+            self._job_thread.join(timeout=5.0)
+        self._loop = None
+        self._job_thread = None
 
     # ------------------------------------------------------------------
     # 初始化
@@ -111,7 +164,6 @@ class GUIController:
                 return True
 
             # 延迟导入 orchestrator，确保 llm_client 已初始化
-            # （orchestrator 模块内部 import 了 agents.llm_client 的全局 client 变量）
             from orchestrator import StoryOrchestrator
             self.orchestrator = StoryOrchestrator(self.config, client=llm)
             self.store = self.orchestrator.knowledge
@@ -168,7 +220,7 @@ class GUIController:
             total_chapters: 目标章节数
             write_mode: "sequential" 或 "batch"
         """
-        if self._job_thread and self._job_thread.is_alive():
+        if self._current_task is not None and not self._current_task.done():
             self.emit_log("System", "", "WARNING", "已有任务在运行中，请先停止")
             return
 
@@ -177,12 +229,11 @@ class GUIController:
             return
 
         self._stop_event.clear()
-        self._job_thread = threading.Thread(
-            target=self._run_async_job,
-            args=(brief, genre, total_chapters, write_mode),
-            daemon=True,
+        loop = self._ensure_loop()
+        self._current_task = asyncio.run_coroutine_threadsafe(
+            self._async_full_pipeline(brief, genre, total_chapters, write_mode),
+            loop,
         )
-        self._job_thread.start()
         self.emit_log("System", "", "INFO", "🎬 创作流程已启动")
 
     def start_single_phase(self, phase_name: str, brief: str = "") -> None:
@@ -192,7 +243,7 @@ class GUIController:
             phase_name: 阶段 key（research/innovate/.../complete）
             brief: 创作梗概（research/innovate/planning 阶段需要）
         """
-        if self._job_thread and self._job_thread.is_alive():
+        if self._current_task is not None and not self._current_task.done():
             self.emit_log("System", "", "WARNING", "已有任务在运行中，请先停止")
             return
 
@@ -201,60 +252,29 @@ class GUIController:
             return
 
         self._stop_event.clear()
-        self._job_thread = threading.Thread(
-            target=self._run_async_phase,
-            args=(phase_name, brief),
-            daemon=True,
+        loop = self._ensure_loop()
+        self._current_task = asyncio.run_coroutine_threadsafe(
+            self._async_single_phase(phase_name, brief),
+            loop,
         )
-        self._job_thread.start()
 
     def stop_job(self) -> None:
-        """发送停止信号给后台任务。"""
+        """发送停止信号给后台任务。
+
+        P1 修复：除了设 _stop_event，还调用 _current_task.cancel() 以中断
+        正在进行的 LLM 调用（而非等当前阶段完整结束才能停止）。
+        """
         self._stop_event.set()
+        # 尝试取消当前 asyncio.Task（如果正在 await LLM 调用，会抛 CancelledError）
+        if self._current_task is not None and not self._current_task.done():
+            loop = self._loop
+            if loop is not None and not loop.is_closed():
+                loop.call_soon_threadsafe(self._current_task.cancel)
         self.emit_log("System", "", "WARNING", "⏹ 正在停止当前任务...")
 
     def is_running(self) -> bool:
         """检查后台任务是否正在运行。"""
-        return self._job_thread is not None and self._job_thread.is_alive()
-
-    # ------------------------------------------------------------------
-    # 后台线程入口
-    # ------------------------------------------------------------------
-
-    def _run_async_job(self, brief: str, genre: str, total_chapters: int, write_mode: str) -> None:
-        """后台线程：运行完整创作流程。"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self._loop = loop
-        try:
-            loop.run_until_complete(self._async_full_pipeline(brief, genre, total_chapters, write_mode))
-        except Exception as e:
-            self.emit_log("System", "", "ERROR", f"流程异常: {e}")
-        finally:
-            self._loop = None
-            loop.close()
-            # 通过队列通知主线程任务完成（不在后台线程直接调用回调）
-            self.log_queue.put(GUILogEntry(
-                agent=_EVENT_JOB_DONE,
-                message="success" if not self._stop_event.is_set() else "stopped",
-            ))
-
-    def _run_async_phase(self, phase_name: str, brief: str = "") -> None:
-        """后台线程：运行单个阶段。"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self._loop = loop
-        try:
-            loop.run_until_complete(self._async_single_phase(phase_name, brief))
-        except Exception as e:
-            self.emit_log("System", "", "ERROR", f"阶段 [{phase_name}] 异常: {e}")
-        finally:
-            self._loop = None
-            loop.close()
-            self.log_queue.put(GUILogEntry(
-                agent=_EVENT_JOB_DONE,
-                message="success" if not self._stop_event.is_set() else "stopped",
-            ))
+        return self._current_task is not None and not self._current_task.done()
 
     # ------------------------------------------------------------------
     # Async 流程实现
@@ -273,40 +293,49 @@ class GUIController:
             ("outlining", "大纲", lambda: orch.phase_outlining(total_chapters)),
         ]
 
-        for phase_key, phase_label, phase_fn in phases:
-            if self._stop_event.is_set():
-                self.emit_log("System", phase_key, "WARNING", f"用户停止，跳过阶段: {phase_label}")
-                return
-            await self._run_phase(phase_key, phase_label, phase_fn)
-
-        # 写作阶段
-        if write_mode == "batch":
-            self.emit_log("System", "writing", "INFO", f"📝 批量并行写作 {total_chapters} 章")
-            for start in range(1, total_chapters + 1, orch.config.batch_size):
+        try:
+            for phase_key, phase_label, phase_fn in phases:
                 if self._stop_event.is_set():
-                    self.emit_log("System", "writing", "WARNING", "用户停止写作")
+                    self.emit_log("System", phase_key, "WARNING", f"用户停止，跳过阶段: {phase_label}")
                     return
-                count = min(orch.config.batch_size, total_chapters - start + 1)
-                await self._run_phase(
-                    "writing",
-                    f"写作 (第{start}-{start+count-1}章)",
-                    lambda s=start, c=count: orch.phase_writing_batch(s, c),
-                )
-        else:
-            for ch in range(1, total_chapters + 1):
-                if self._stop_event.is_set():
-                    self.emit_log("System", "writing", "WARNING", f"用户停止写作（已完成 {ch-1} 章）")
-                    return
-                await self._run_phase(
-                    "writing",
-                    f"写作 (第{ch}章)",
-                    lambda c=ch: orch.phase_writing(c),
-                )
+                await self._run_phase(phase_key, phase_label, phase_fn)
 
-        # 完成
-        await self._run_phase("complete", "完成", lambda: orch.phase_complete())
+            # 写作阶段
+            if write_mode == "batch":
+                self.emit_log("System", "writing", "INFO", f"📝 批量并行写作 {total_chapters} 章")
+                for start in range(1, total_chapters + 1, orch.config.batch_size):
+                    if self._stop_event.is_set():
+                        self.emit_log("System", "writing", "WARNING", "用户停止写作")
+                        return
+                    count = min(orch.config.batch_size, total_chapters - start + 1)
+                    await self._run_phase(
+                        "writing",
+                        f"写作 (第{start}-{start+count-1}章)",
+                        lambda s=start, c=count: orch.phase_writing_batch(s, c),
+                    )
+            else:
+                for ch in range(1, total_chapters + 1):
+                    if self._stop_event.is_set():
+                        self.emit_log("System", "writing", "WARNING", f"用户停止写作（已完成 {ch-1} 章）")
+                        return
+                    await self._run_phase(
+                        "writing",
+                        f"写作 (第{ch}章)",
+                        lambda c=ch: orch.phase_writing(c),
+                    )
 
-        self.emit_log("System", "", "SUCCESS", "🎉 创作流程全部完成！")
+            # 完成
+            await self._run_phase("complete", "完成", lambda: orch.phase_complete())
+
+            self.emit_log("System", "", "SUCCESS", "🎉 创作流程全部完成！")
+        except asyncio.CancelledError:
+            self.emit_log("System", "", "WARNING", "⏹ 任务已被用户取消")
+            raise
+        finally:
+            self.log_queue.put(GUILogEntry(
+                agent=_EVENT_JOB_DONE,
+                message="success" if not self._stop_event.is_set() else "stopped",
+            ))
 
     async def _async_single_phase(self, phase_name: str, brief: str = "") -> None:
         """运行单个阶段。
@@ -332,8 +361,17 @@ class GUIController:
             return
 
         label, fn = phase_map[phase_name]
-        await self._run_phase(phase_name, label, fn)
-        self.emit_log("System", phase_name, "SUCCESS", f"阶段 [{label}] 完成")
+        try:
+            await self._run_phase(phase_name, label, fn)
+            self.emit_log("System", phase_name, "SUCCESS", f"阶段 [{label}] 完成")
+        except asyncio.CancelledError:
+            self.emit_log("System", phase_name, "WARNING", f"⏹ 阶段 [{label}] 已取消")
+            raise
+        finally:
+            self.log_queue.put(GUILogEntry(
+                agent=_EVENT_JOB_DONE,
+                message="success" if not self._stop_event.is_set() else "stopped",
+            ))
 
     async def _run_phase(self, phase_key: str, phase_label: str, phase_fn) -> None:
         """执行单个阶段，带日志和阶段变更事件。"""
@@ -350,6 +388,13 @@ class GUIController:
                 f"✅ [{phase_label}] 完成 (耗时 {elapsed:.1f}s)",
                 excerpt=result[:200] if isinstance(result, str) else "",
             )
+        except asyncio.CancelledError:
+            elapsed = time.time() - start_time
+            self.emit_log(
+                "System", phase_key, "WARNING",
+                f"⏹ [{phase_label}] 已取消 (耗时 {elapsed:.1f}s)",
+            )
+            raise
         except Exception as e:
             elapsed = time.time() - start_time
             self.emit_log(
@@ -442,6 +487,15 @@ class GUIController:
                 return ""
         return ""
 
+    def save_research(self, topic: str, content: str) -> None:
+        """保存调研资料（P1 修复：原为未实现的空操作）。"""
+        if self.store:
+            try:
+                self.store.save_research(topic, content)
+                self.emit_log("System", "", "INFO", f"💾 研究 [{topic}] 已保存")
+            except Exception as e:
+                self.emit_log("System", "", "ERROR", f"保存研究失败: {e}")
+
     def list_research_topics(self) -> list[str]:
         """列出所有调研主题。"""
         if self.store:
@@ -449,18 +503,24 @@ class GUIController:
         return []
 
     def get_orchestrator_status(self) -> dict:
-        """获取 orchestrator 状态。"""
+        """获取 orchestrator 状态（线程安全）。
+
+        P1 修复：用 _state_lock 保护读取，避免后台线程并发写 run_cost/phase 等
+        字段时的竞态。
+        """
         if self.orchestrator:
             try:
-                return self.orchestrator.get_status()
+                with self._state_lock:
+                    return self.orchestrator.get_status()
             except Exception as e:
                 logger.warning(f"get_status() 失败: {e}")
         return {}
 
     def get_agent_names(self) -> list[str]:
-        """获取 agent 名称列表。"""
+        """获取 agent 名称列表（线程安全）。"""
         if self.orchestrator and hasattr(self.orchestrator, 'agents'):
-            return list(self.orchestrator.agents.keys())
+            with self._state_lock:
+                return list(self.orchestrator.agents.keys())
         return []
 
     # ------------------------------------------------------------------
@@ -499,6 +559,8 @@ class GUIController:
                     self._on_phase_change(entry.phase)
                 continue
             if entry.agent == _EVENT_JOB_DONE:
+                # 任务完成后清理 _current_task 引用
+                self._current_task = None
                 if self._on_job_done:
                     self._on_job_done(entry.message == "success")
                 continue

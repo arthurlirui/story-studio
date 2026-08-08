@@ -56,36 +56,36 @@ class TestRecordUsage:
         a3 = FakeAgent(model="m2", last_usage={"prompt_tokens": 5, "completion_tokens": 5,
                                                "total_tokens": 10})
         for a in (a1, a2, a3):
-            orch._record_usage(a)
+            _run(orch._record_usage(a))
         assert orch.run_cost["m1"]["prompt_tokens"] == 300
         assert orch.run_cost["m1"]["total_tokens"] == 360
         assert orch.run_cost["m1"]["calls"] == 2
         assert orch.run_cost["m2"]["calls"] == 1
 
     def test_skips_none_usage(self, orch: StoryOrchestrator):
-        orch._record_usage(FakeAgent(model="m1", last_usage=None))
+        _run(orch._record_usage(FakeAgent(model="m1", last_usage=None)))
         assert orch.run_cost == {}
 
     def test_skips_empty_usage(self, orch: StoryOrchestrator):
-        orch._record_usage(FakeAgent(model="m1", last_usage={}))
+        _run(orch._record_usage(FakeAgent(model="m1", last_usage={})))
         assert orch.run_cost == {}
 
     def test_handles_missing_last_usage_attr(self, orch: StoryOrchestrator):
         # 没有 last_usage 属性的 agent 不应崩溃
         class Bare:
             model = "m1"
-        orch._record_usage(Bare())
+        _run(orch._record_usage(Bare()))
         assert orch.run_cost == {}
 
 
 class TestCostSummary:
     def test_summary_aggregates_across_models(self, orch: StoryOrchestrator):
-        orch._record_usage(FakeAgent(model="m1", last_usage={"prompt_tokens": 100,
+        _run(orch._record_usage(FakeAgent(model="m1", last_usage={"prompt_tokens": 100,
                                                              "completion_tokens": 50,
-                                                             "total_tokens": 150}))
-        orch._record_usage(FakeAgent(model="m2", last_usage={"prompt_tokens": 10,
+                                                             "total_tokens": 150})))
+        _run(orch._record_usage(FakeAgent(model="m2", last_usage={"prompt_tokens": 10,
                                                              "completion_tokens": 5,
-                                                             "total_tokens": 15}))
+                                                             "total_tokens": 15})))
         summary = orch._cost_summary()
         assert summary["total_calls"] == 2
         assert summary["total_tokens"] == 165
@@ -98,9 +98,9 @@ class TestCostSummary:
         assert summary["by_model"] == {}
 
     def test_get_status_includes_cost(self, orch: StoryOrchestrator):
-        orch._record_usage(FakeAgent(model="m1", last_usage={"prompt_tokens": 100,
+        _run(orch._record_usage(FakeAgent(model="m1", last_usage={"prompt_tokens": 100,
                                                              "completion_tokens": 50,
-                                                             "total_tokens": 150}))
+                                                             "total_tokens": 150})))
         status = orch.get_status()
         assert "cost" in status
         assert status["cost"]["total_calls"] == 1

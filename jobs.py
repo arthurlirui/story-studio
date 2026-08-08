@@ -365,16 +365,13 @@ class JobRunner:
         import copy
         from pathlib import Path
         from orchestrator import StoryOrchestrator
-        from agents.llm_client import LLMClient
+        from cli._common import create_llm_client
         from planner import TaskPlanner
 
         cfg = copy.deepcopy(self.cfg)
         cfg.knowledge_dir = job.knowledge_dir
         cfg.output_dir = job.output_dir
-        client = LLMClient(
-            base_url=cfg.llm_base_url, api_key=cfg.llm_api_key,
-            default_model=cfg.main_model,
-        )
+        client = create_llm_client(cfg)
         try:
             orch = StoryOrchestrator(cfg, client=client)
             if job.project_name:
@@ -409,16 +406,13 @@ class JobRunner:
         import copy
         from pathlib import Path
         from orchestrator import StoryOrchestrator
-        from agents.llm_client import LLMClient
+        from cli._common import create_llm_client
         from planner import TaskPlanner
 
         cfg = copy.deepcopy(self.cfg)
         cfg.knowledge_dir = job.knowledge_dir
         cfg.output_dir = job.output_dir
-        client = LLMClient(
-            base_url=cfg.llm_base_url, api_key=cfg.llm_api_key,
-            default_model=cfg.main_model,
-        )
+        client = create_llm_client(cfg)
         try:
             orch = StoryOrchestrator(cfg, client=client)
             if job.project_name:
@@ -450,7 +444,7 @@ class JobRunner:
         """单个 job 的完整生命周期：research → innovate → planning → building → outlining → writing → complete。"""
         # 延迟导入避免循环依赖
         from orchestrator import StoryOrchestrator
-        from agents.llm_client import LLMClient
+        from cli._common import create_llm_client
 
         async with self._semaphore:
             # per-job 锁：防止 API 端点（run_task/run_all）与 _run_job 并发
@@ -468,11 +462,7 @@ class JobRunner:
 
                 # 每个 job 独立的 LLM client（独立连接池）。
                 # 在 finally 中关闭，确保成功/失败/取消任何路径都不泄漏连接池。
-                client = LLMClient(
-                    base_url=cfg.llm_base_url,
-                    api_key=cfg.llm_api_key,
-                    default_model=cfg.main_model,
-                )
+                client = create_llm_client(cfg)
                 try:
                     orch = StoryOrchestrator(cfg, client=client)
                     if job.project_name:

@@ -188,25 +188,48 @@ def mask_secret(value: str, visible: int = 4) -> str:
 # 三件套，并确保 ``--config`` 全局选项一致生效。
 
 
-def load_cfg():
+def load_cfg(*, create_dirs: bool = True):
     """加载配置，尊重 ``--config`` 全局选项。
 
-    ``cli_state["config_path"]`` 存的是 settings.yaml 文件路径，
-    而 ``load_config`` 接收的是目录，故取其父目录。
+    ``cli_state["config_path"]`` 存的是路径，可能是 settings.yaml 文件路径
+    或其父目录。load_config 接收的是目录，故：
+    - 若传入的是文件（以 .yaml/.yml 结尾），取其 .parent
+    - 若传入的是目录，直接使用
+
+    Args:
+        create_dirs: 只读命令（agents list / config show / health）传 False，
+            避免 load_config 的 mkdir 副作用在用户目录下创建空目录树。
     """
     from config import load_config
     from cli.main import cli_state
     cp = cli_state.get("config_path")
     if cp:
         from pathlib import Path
-        return load_config(str(Path(cp).parent))
-    return load_config()
+        p = Path(cp)
+        # 支持文件路径和目录路径两种形式
+        config_dir = p.parent if p.is_file() or p.suffix in (".yaml", ".yml") else p
+        return load_config(str(config_dir), create_dirs=create_dirs)
+    return load_config(create_dirs=create_dirs)
 
 
 def get_runner():
     """构造 JobRunner（base_dir=jobs），配置走 load_cfg()。"""
     from jobs import JobRunner
     return JobRunner(base_dir="jobs", cfg=load_cfg())
+
+
+def create_llm_client(cfg):
+    """统一的 LLMClient 构造工厂，消除 7+ 处重复构造。
+
+    所有 CLI 子命令 / jobs.py / api 层都应通过此函数构造 LLMClient，
+    而非散落地 ``LLMClient(base_url=..., api_key=..., default_model=...)``。
+    """
+    from agents.llm_client import LLMClient
+    return LLMClient(
+        base_url=cfg.llm_base_url,
+        api_key=cfg.llm_api_key,
+        default_model=cfg.main_model,
+    )
 
 
 def build_orch():

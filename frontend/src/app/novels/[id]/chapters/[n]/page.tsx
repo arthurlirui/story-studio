@@ -21,10 +21,18 @@ export default function ChapterReaderPage({
   const [content, setContent] = useState<ChapterContent | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const { tokens, streaming, start, stop } = useChapterStream(id, chapterNum);
+  const { tokens, streaming, start, stop } = useChapterStream(id, isNaN(chapterNum) ? null : chapterNum);
 
   useEffect(() => {
+    if (isNaN(chapterNum)) {
+      Promise.resolve().then(() => {
+        setError("无效的章节号");
+        setLoading(false);
+      });
+      return;
+    }
     async function load() {
       try {
         const [ch, list] = await Promise.all([
@@ -33,8 +41,9 @@ export default function ChapterReaderPage({
         ]);
         setContent(ch);
         setChapters(list.chapters);
+        setError(null);
       } catch (e) {
-        console.error(e);
+        setError(e instanceof Error ? e.message : "加载失败");
       } finally {
         setLoading(false);
       }
@@ -48,6 +57,10 @@ export default function ChapterReaderPage({
 
   if (loading) {
     return <div className="flex-1 p-6 text-muted-foreground">加载中...</div>;
+  }
+
+  if (error) {
+    return <div className="flex-1 p-6 text-destructive">{error}</div>;
   }
 
   return (
@@ -106,11 +119,11 @@ export default function ChapterReaderPage({
       {/* 流式生成控制 */}
       <div className="flex items-center gap-2 mb-4">
         {!streaming ? (
-          <Button size="sm" onClick={start}>
+          <Button size="sm" onClick={start} aria-label="开始流式生成本章">
             <Play className="h-4 w-4 mr-1" /> 流式生成本章
           </Button>
         ) : (
-          <Button size="sm" variant="destructive" onClick={stop}>
+          <Button size="sm" variant="destructive" onClick={stop} aria-label="停止流式生成">
             <Square className="h-4 w-4 mr-1" /> 停止生成
           </Button>
         )}
@@ -143,7 +156,7 @@ export default function ChapterReaderPage({
             </div>
           ) : (
             <p className="text-muted-foreground">
-              本章尚未生成。点击"流式生成本章"实时查看 AI 写作过程。
+              本章尚未生成。点击&ldquo;流式生成本章&rdquo;实时查看 AI 写作过程。
             </p>
           )}
         </CardContent>

@@ -27,7 +27,7 @@ export default function SettingsPage() {
   async function handleTest() {
     setHealthStatus("检测中...");
     const ok = await checkHealth();
-    setHealthStatus(ok ? "后端在线 ✅" : "后端离线 ❌");
+    setHealthStatus(ok ? "后端在线" : "后端离线");
   }
 
   return (

@@ -62,6 +62,7 @@ class StudioConfig:
     max_context_chars: int = 60000  # build_context 总字符预算，超出按章节号倒序裁剪最旧摘要
     batch_size: int = 3  # 单批次并行写作的默认章节数（仍受 scene_writers 上限约束）
     merge_gate_rounds: int = 1  # 融合门冲突章定向重写的轮数上限
+    rate_limit_delay: float = 0.0  # API 调用间固定延迟（秒）；0 = 禁用，让 LLMClient 的 429 退避做唯一限流
 
 
 def _load_dotenv(start: Path) -> None:
@@ -79,7 +80,28 @@ def _load_dotenv(start: Path) -> None:
             break
 
 
-def load_config(config_dir: str | Path = "") -> StudioConfig:
+def ensure_directories(cfg: StudioConfig) -> None:
+    """确保 knowledge_dir / output_dir 及其子目录存在。
+
+    从 load_config 中提取为独立函数，避免只读命令（ss config show / ss agents list）
+    触发目录创建副作用。需要写入的入口（StoryOrchestrator / JobRunner / build_orch）
+    应显式调用此函数。
+    """
+    Path(cfg.knowledge_dir).mkdir(parents=True, exist_ok=True)
+    for sub in ("world", "characters", "story/chapters", "story/revisions",
+                "story/summaries", "story/reviews", "research"):
+        Path(cfg.knowledge_dir, sub).mkdir(parents=True, exist_ok=True)
+    Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
+
+
+def load_config(config_dir: str | Path = "", *, create_dirs: bool = True) -> StudioConfig:
+    """加载配置。
+
+    Args:
+        config_dir: 配置目录路径（含 settings.yaml）。空串则用 config/ 包目录。
+        create_dirs: 是否自动创建 knowledge_dir / output_dir 子目录。
+            只读命令（ss config show / ss agents list）传 False 避免副作用。
+    """
     config_dir = Path(config_dir) if config_dir else Path(__file__).parent
     _load_dotenv(config_dir)
     config_file = config_dir / "settings.yaml"
@@ -131,11 +153,8 @@ def load_config(config_dir: str | Path = "") -> StudioConfig:
     if not cfg.api_key:
         cfg.api_key = os.environ.get("STORY_STUDIO_API_KEY", "")
 
-    # Ensure directories exist
-    Path(cfg.knowledge_dir).mkdir(parents=True, exist_ok=True)
-    for sub in ("world", "characters", "story/chapters", "story/revisions",
-                "story/summaries", "story/reviews", "research"):
-        Path(cfg.knowledge_dir, sub).mkdir(parents=True, exist_ok=True)
-    Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
+    # 确保目录存在（可由调用方通过 create_dirs=False 关闭）
+    if create_dirs:
+        ensure_directories(cfg)
 
     return cfg

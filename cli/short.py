@@ -14,7 +14,7 @@ from typing import Optional
 
 import typer
 
-from cli._common import console, print_json, load_cfg
+from cli._common import console, print_json, load_cfg, create_llm_client
 
 app = typer.Typer(
     name="short",
@@ -37,13 +37,9 @@ def short_generate(
 
     async def _go():
         cfg = load_cfg()
-        from agents.llm_client import LLMClient
         from short_story.engine import ShortStoryPipeline, SkillConfigStore
 
-        client = LLMClient(
-            base_url=cfg.llm_base_url, api_key=cfg.llm_api_key,
-            default_model=cfg.main_model,
-        )
+        client = create_llm_client(cfg)
         try:
             skill_store = SkillConfigStore(Path("short_story/skill_configs"))
             if output is None:
@@ -92,13 +88,9 @@ def short_trends(
 
     async def _go():
         cfg = load_cfg()
-        from agents.llm_client import LLMClient
         from short_story.trend_scout import TrendScout, PLATFORM_QUERIES
 
-        client = LLMClient(
-            base_url=cfg.llm_base_url, api_key=cfg.llm_api_key,
-            default_model=cfg.main_model,
-        )
+        client = create_llm_client(cfg)
         try:
             scout = TrendScout(llm_client=client)
 

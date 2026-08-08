@@ -26,6 +26,7 @@ import {
 const navItems = [
   { href: "/", label: "仪表盘", icon: LayoutDashboard },
   { href: "/novels", label: "小说项目", icon: BookOpen },
+  { href: "/novels/new", label: "创建新小说", icon: Sparkles },
   { href: "/jobs", label: "后台任务", icon: Briefcase },
   { href: "/settings", label: "设置", icon: Settings },
 ];
