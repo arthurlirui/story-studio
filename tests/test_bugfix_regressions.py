@@ -311,3 +311,28 @@ class TestStreamTransportRetry:
         assert tokens[-1].startswith(LLM_ERROR_PREFIX)
         assert len([t for t in tokens if t == "部分"]) == 1
         assert mock.calls == 1
+
+
+# ── 5. 短篇章节标题统一为「第N章」 ────────────────────────────
+
+
+def test_chapter_title_line_strips_prefix():
+    """_chapter_title_line 应剥掉残留的"第N章"前缀，输出 `## 第N章 标题`。"""
+    from short_story.engine import ShortStoryPipeline, SectionOutput
+
+    so = SectionOutput(section=1, title="第1章 凌晨两点的敲门声")
+    assert ShortStoryPipeline._chapter_title_line(so) == "## 第1章 凌晨两点的敲门声"
+    so2 = SectionOutput(section=2, title="第2章：镜像空间")
+    assert ShortStoryPipeline._chapter_title_line(so2) == "## 第2章 镜像空间"
+    so3 = SectionOutput(section=3, title="窗口期")
+    assert ShortStoryPipeline._chapter_title_line(so3) == "## 第3章 窗口期"
+
+
+def test_strip_chapter_header_removes_model_hallucinated_title():
+    """deai 输出里模型自拟的"## 第四章"应被剥掉，正文保留。"""
+    from short_story.engine import ShortStoryPipeline
+
+    out = ShortStoryPipeline._strip_chapter_header("## 第四章\n\n正文第一行。\n\n第二段。")
+    assert out == "正文第一行。\n\n第二段。"
+    # 无标题行时原样返回
+    assert ShortStoryPipeline._strip_chapter_header("只有正文。") == "只有正文。"

@@ -203,7 +203,7 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
                 logger.warning("section %d 质量问题: %s", sp.section, quality_issues)
                 so.quality_issues = quality_issues
             sections_out.append(so)
-            full_parts.append(so.text)
+            full_parts.append(f"{self._chapter_title_line(so)}\n\n{so.text}".rstrip())
             full_parts.append("")
             prev_text = so.text
         full_text = "\n".join(full_parts).strip()
@@ -251,7 +251,7 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
             continuity = f"\n## 上一节结尾（必须无缝衔接）：\n" + "\n".join(last_lines)
         return f"""{context}
 ## 本节任务
-- 节号：第{sp.section}节
+- 章节号：第{sp.section}章
 - 场景：{sp.scene}
 - 目标字数：{sp.word_target}字
 - 爽点等级：{sp.climax_level}
@@ -262,17 +262,38 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
 3. 结尾留信息缺口
 4. 不要写世界观说明，设定在行动中自然浮现
 5. {"第一人称" if plan.pov=="first_person" else "第三人称"}
-请直接输出本节正文（含节标题）："""
+6. 首行必须是章节标题，格式固定为 `## 第{sp.section}章 标题`，章号用阿拉伯数字且与上面给出的章节号一致
+请直接输出本章正文（首行为章节标题）："""
 
     def _process_section(self, sec_num: int, raw: str, word_target: int) -> SectionOutput:
         text = raw.strip()
         lines = text.split("\n")
-        title = f"第{sec_num}节"
+        title = f"第{sec_num}章"
         if lines and (lines[0].startswith("#") or lines[0].startswith("第")):
             title = lines[0].lstrip("#").strip()
             text = "\n".join(lines[1:]).strip()
         wc = len(text.replace("\n","").replace(" ",""))
         return SectionOutput(section=sec_num, title=title, text=text, word_count=wc)
+
+    @staticmethod
+    def _strip_chapter_header(text: str) -> str:
+        """剥掉正文开头的章节标题行（## 第N章 …），避免 deai 后重复/错号。"""
+        s = text.strip()
+        if not s:
+            return s
+        first = s.split("\n", 1)[0]
+        if first.startswith("#") or first.startswith("第"):
+            return s.split("\n", 1)[1].lstrip() if "\n" in s else ""
+        return s
+
+    @staticmethod
+    def _chapter_title_line(so: "SectionOutput") -> str:
+        """生成规范章节标题行 `## 第N章 标题`，剥掉 so.title 里残留的"第N章"前缀。"""
+        title_text = so.title or ""
+        for _ in range(2):
+            if title_text.startswith("第") and "章" in title_text[:6]:
+                title_text = title_text.split("章", 1)[1].lstrip("：: ").strip()
+        return f"## 第{so.section}章 {title_text}".rstrip()
 
     # ── Phase 3: DeAI 去 AI 感润色 ──
     async def _phase_deai(self, result: StoryResult, plan: StoryPlan) -> StoryResult:
@@ -300,9 +321,10 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
             original = so.text
             orig_n = len(original)
             if orig_n < 100:
-                logger.warning("  第%d节 太短(%d字), 跳过", so.section, orig_n)
+                logger.warning("  第%d章 太短(%d字), 跳过", so.section, orig_n)
+                kept = f"{self._chapter_title_line(so)}\n\n{original}".rstrip()
                 polished_sections.append(so)
-                full_parts.append(original)
+                full_parts.append(kept)
                 full_parts.append("")
                 continue
 
@@ -338,20 +360,25 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
                         await asyncio.sleep(2)
 
             if output:
-                pct = len(output) * 100 // orig_n if orig_n else 0
-                logger.info("    ✅ 第%d节: %d→%d字 (%d%%)", so.section, orig_n, len(output), pct)
+                # 模型可能自拟/篡改章号（如"第四章""第N章"），统一剥掉
+                # 再回填规范标题 `## 第N章`，保证全书章号连续正确
+                body = self._strip_chapter_header(output)
+                final_text = f"{self._chapter_title_line(so)}\n\n{body}".rstrip()
+                pct = len(final_text) * 100 // orig_n if orig_n else 0
+                logger.info("    ✅ 第%d章: %d->%d字 (%d%%)", so.section, orig_n, len(final_text), pct)
                 polished = SectionOutput(
-                    section=so.section, title=so.title,
-                    text=output, word_count=len(output.replace("\n","").replace(" ",""))
+                    section=so.section, title=f"第{so.section}章",
+                    text=final_text, word_count=len(final_text.replace("\n","").replace(" ",""))
                 )
                 polished_sections.append(polished)
-                full_parts.append(output)
+                full_parts.append(final_text)
                 full_parts.append("")
                 ok += 1
             else:
-                logger.error("    ❌ 第%d节: %s, 保留原文", so.section, last_err or "未知")
+                logger.error("    ❌ 第%d章: %s, 保留原文", so.section, last_err or "未知")
+                kept = f"{self._chapter_title_line(so)}\n\n{original}".rstrip()
                 polished_sections.append(so)
-                full_parts.append(original)
+                full_parts.append(kept)
                 full_parts.append("")
                 fail += 1
 
