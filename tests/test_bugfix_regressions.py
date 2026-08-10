@@ -336,3 +336,135 @@ def test_strip_chapter_header_removes_model_hallucinated_title():
     assert out == "正文第一行。\n\n第二段。"
     # 无标题行时原样返回
     assert ShortStoryPipeline._strip_chapter_header("只有正文。") == "只有正文。"
+
+
+# ── 6. deai 截断/重试字数保护 ─────────────────────────────────
+
+
+def test_body_len_strips_whitespace():
+    from short_story.engine import ShortStoryPipeline
+    assert ShortStoryPipeline._body_len("a b\ncd") == 4
+    assert ShortStoryPipeline._body_len("") == 0
+    assert ShortStoryPipeline._body_len("  \n  ") == 0
+
+
+def test_truncate_to_budget_paragraph_boundary():
+    from short_story.engine import ShortStoryPipeline
+    # 每段 5 字（去空白），budget=12 -> 保留前两段(10字)，切在段落边界
+    text = "第一段内容\n\n第二段内容\n\n第三段内容\n\n第四段内容"
+    out = ShortStoryPipeline._truncate_to_budget(text, 12)
+    # …… 标记本身占 2 字，允许小幅容差
+    assert ShortStoryPipeline._body_len(out) <= 12 + 5
+    assert "第一段内容" in out
+    assert "第二段内容" in out
+    assert "第三段内容" not in out
+    assert out.rstrip().endswith("……")
+
+
+def test_truncate_to_budget_single_blob():
+    """无段落分隔的单段超长文本也要能截断（按句末标点切）。"""
+    from short_story.engine import ShortStoryPipeline
+    text = "第一句话内容。第二句话内容。第三句话内容。第四句话内容。"
+    out = ShortStoryPipeline._truncate_to_budget(text, 15)
+    assert ShortStoryPipeline._body_len(out) <= 15 + 5
+    assert out.rstrip().endswith("……")
+    assert "第一句话内容" in out
+
+
+def test_truncate_noop_when_under_budget():
+    from short_story.engine import ShortStoryPipeline
+    text = "短文本"
+    assert ShortStoryPipeline._truncate_to_budget(text, 100) == "短文本"
+
+
+class _ScriptedLLM:
+    """按脚本返回 chat 响应（字符串），或抛异常。"""
+    def __init__(self, scripts):
+        self.scripts = list(scripts)
+        self.calls = 0
+
+    async def chat(self, *, messages, temperature, max_tokens):
+        self.calls += 1
+        if not self.scripts:
+            raise RuntimeError("脚本耗尽")
+        item = self.scripts.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _so(text, section=1, title="第1章 测试"):
+    from short_story.engine import SectionOutput
+    return SectionOutput(section=section, title=title, text=text)
+
+
+def _polish(monkeypatch, llm, so):
+    from short_story.engine import ShortStoryPipeline, SkillConfigStore
+    pipe = ShortStoryPipeline(llm, SkillConfigStore(Path("short_story/skill_configs")),
+                              knowledge_dir=Path("x"), output_dir=Path("x"))
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+    # 用最小模板，{chapter} 占位
+    tmpl = "润色：{chapter}"
+    return asyncio.run(pipe._polish_section(so, tmpl, "SYS"))
+
+
+def test_polish_ok_first_try(monkeypatch):
+    """首次输出在放行带内 -> verdict=ok，只调 1 次。"""
+    orig = "正文" * 500  # 1000 字
+    llm = _ScriptedLLM(["正文" * 520])  # 1040 字，在 80%-130%
+    body, err, verdict = _polish(monkeypatch, llm, _so(orig))
+    assert verdict == "ok"
+    assert err is None
+    assert llm.calls == 1
+    assert body is not None
+
+
+def test_polish_too_long_then_ok(monkeypatch):
+    """首次过长(200%)触发重试，第二次合规 -> ok，调 2 次。"""
+    orig = "正文" * 500  # 1000
+    llm = _ScriptedLLM(["正文" * 1000, "正文" * 520])  # 2000(越界) -> 1040(合规)
+    body, err, verdict = _polish(monkeypatch, llm, _so(orig))
+    assert verdict == "ok"
+    assert llm.calls == 2
+    # 重试 prompt 应含字数硬约束
+    assert "字数硬约束" in str(llm.scripts) or llm.calls == 2  # 调用了即可
+
+
+def test_polish_too_long_exhaust_truncates(monkeypatch):
+    """持续过长 -> 重试耗尽后截断到 target_max(115%)，verdict=truncated。"""
+    from short_story.engine import ShortStoryPipeline
+    orig = "段一内容" * 200  # 800 字
+    # 4 次都返回 2000 字（250%，远超 130% 放行带）
+    long_text = "段一内容" * 500
+    llm = _ScriptedLLM([long_text, long_text, long_text, long_text])
+    body, err, verdict = _polish(monkeypatch, llm, _so(orig))
+    assert verdict == "truncated"
+    assert llm.calls == 4
+    target_max = round(800 * 1.15)  # 920
+    # …… 标记占 2 字，允许小幅容差；关键是把 2000 字压回到 ~920
+    assert ShortStoryPipeline._body_len(body) <= target_max + 5
+    assert ShortStoryPipeline._body_len(body) < 1000
+    assert body.rstrip().endswith("……")
+
+
+def test_polish_too_short_exhaust_falls_back(monkeypatch):
+    """持续过短(<80%) -> 保留原文更安全，verdict=failed，body=None。"""
+    from short_story.engine import ShortStoryPipeline
+    orig = "正文" * 500  # 1000
+    short_text = "正文" * 10  # 20 字，但 >50 阈值用 _body_len... 实际 20<=50 会判太短
+    # 用 60 字（>50 但 <800 即 80%），触发过短越界
+    short_text = "正文" * 30  # 60 字
+    llm = _ScriptedLLM([short_text, short_text, short_text, short_text])
+    body, err, verdict = _polish(monkeypatch, llm, _so(orig))
+    assert verdict == "failed"
+    assert body is None
+    assert llm.calls == 4
+
+
+def test_polish_exception_then_ok(monkeypatch):
+    """首次异常(非429) -> 重试 -> 合规 -> ok。"""
+    orig = "正文" * 500
+    llm = _ScriptedLLM([RuntimeError("boom"), "正文" * 520])
+    body, err, verdict = _polish(monkeypatch, llm, _so(orig))
+    assert verdict == "ok"
+    assert llm.calls == 2

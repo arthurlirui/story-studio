@@ -295,6 +295,142 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
                 title_text = title_text.split("章", 1)[1].lstrip("：: ").strip()
         return f"## 第{so.section}章 {title_text}".rstrip()
 
+    # ── 字数合规保护（deai 截断/重试）──
+    # 与 polish_prompt.txt 的契约一致：润色后正文为原文的 90%-115%。
+    # TARGET_* 是写给模型的硬约束；ACCEPT_* 是立即放行的宽容带，
+    # 超出宽容带才触发带字数约束的重试，避免对边缘 case 过度消耗配额。
+    TARGET_MIN_RATIO = 0.90
+    TARGET_MAX_RATIO = 1.15
+    ACCEPT_MIN_RATIO = 0.80
+    ACCEPT_MAX_RATIO = 1.30
+    POLISH_MAX_ATTEMPTS = 4  # 1 次初试 + 3 次字数/异常重试
+
+    @staticmethod
+    def _body_len(text: str) -> int:
+        """正文字数：去换行/空格后的字符数（与 word_count 口径一致）。"""
+        return len((text or "").replace("\n", "").replace(" ", ""))
+
+    @staticmethod
+    def _truncate_to_budget(text: str, budget: int) -> str:
+        """把正文截到约 budget 字（_body_len 计量），在句子/换行边界切并补……。
+
+        先按段落累加；单段仍超预算时降级到按句末标点(。！？!?) / 换行切分，
+        确保哪怕模型输出一整段无空行的长文本也能被截断。
+        """
+        bl = ShortStoryPipeline._body_len
+        if not text or bl(text) <= budget:
+            return text
+
+        import re
+        # 句子级 token：每段以句末标点或换行收尾
+        tokens = re.findall(r"[^。！？!?\n]*[。！？!?\n]?", text)
+
+        out = ""
+        for tok in tokens:
+            if not tok:
+                continue
+            if bl(out + tok) > budget:
+                break
+            out += tok
+
+        if not out:
+            # 首句就超预算：按原始长度硬切（含空白，偏保守）
+            out = text[:budget]
+
+        if bl(out) < bl(text):
+            out = out.rstrip() + "\n\n……"
+        return out
+
+    async def _polish_section(
+        self, so: "SectionOutput", polish_tmpl: str, system: str,
+    ) -> tuple[str | None, str | None, str]:
+        """单节去 AI 感润色 + 字数合规重试/截断保护。
+
+        返回 (body, last_err, verdict)：
+        - body：header 已剥、字数合规的润色正文；失败时为 None
+        - verdict：'ok'（合规放行）/ 'truncated'（重试耗尽后截断）/ 'best-effort'
+          （采用最接近的候选）/ 'failed'（全部失败，调用方保留原文）
+        """
+        original = so.text
+        orig_n = self._body_len(original)
+        target_min = max(1, round(orig_n * self.TARGET_MIN_RATIO))
+        target_max = round(orig_n * self.TARGET_MAX_RATIO)
+        accept_min = max(1, round(orig_n * self.ACCEPT_MIN_RATIO))
+        accept_max = round(orig_n * self.ACCEPT_MAX_RATIO)
+
+        base_user = (
+            polish_tmpl.replace("{section}", original)
+            if "{section}" in polish_tmpl
+            else polish_tmpl.replace("{chapter}", original)
+        )
+
+        best: tuple[int, str] | None = None  # (body_len, body) 最接近原文的越界候选
+        last_err: str | None = None
+
+        for attempt in range(self.POLISH_MAX_ATTEMPTS):
+            user = base_user
+            if attempt > 0 and best is not None:
+                # 上一轮字数越界，追加硬约束驱动模型收敛
+                user = (
+                    base_user
+                    + f"\n\n## 字数硬约束（上一版 {best[0]} 字，不合格）\n"
+                    f"原文 {orig_n} 字。润色后正文必须严格落在 "
+                    f"{target_min}-{target_max} 字（原文的 90%-115%）。"
+                    f"只做语言层面的润色与压缩，不得扩写剧情、不得新增段落。"
+                )
+            try:
+                resp = await self.llm.chat(
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    temperature=0.82,
+                    max_tokens=6000,
+                )
+                text = (resp or "").strip()
+                if not text or self._body_len(text) <= 50:
+                    last_err = f"输出太短({self._body_len(text)}字)"
+                    continue
+                body = self._strip_chapter_header(text)
+                n = self._body_len(body)
+                if accept_min <= n <= accept_max:
+                    return body, None, "ok"
+                # 越界：记录最接近原文的候选，带约束重试
+                if best is None or abs(n - orig_n) < abs(best[0] - orig_n):
+                    best = (n, body)
+                logger.warning(
+                    "    第%d章 字数越界: %d字(原文%d, 放行带%d-%d), 重试 %d/%d",
+                    so.section, n, orig_n, accept_min, accept_max,
+                    attempt + 1, self.POLISH_MAX_ATTEMPTS,
+                )
+                last_err = f"字数越界({n}字, 放行带{accept_min}-{accept_max})"
+            except Exception as e:
+                last_err = str(e)
+                if "429" in str(e) or "Rate" in str(e):
+                    wait = 5 * (2 ** attempt)
+                    logger.warning("    429 限流, 等%ds...", wait)
+                    await asyncio.sleep(wait)
+                else:
+                    await asyncio.sleep(2)
+
+        # 重试耗尽：按越界方向兜底
+        if best is not None:
+            n, body = best
+            if n > accept_max:
+                truncated = self._truncate_to_budget(body, target_max)
+                logger.warning(
+                    "    第%d章 重试耗尽且过长(%d字), 截断到 ~%d字",
+                    so.section, n, self._body_len(truncated),
+                )
+                return truncated, None, "truncated"
+            # 过短：保留原文比丢内容更安全
+            logger.warning(
+                "    第%d章 重试耗尽且过短(候选%d字<%d), 保留原文",
+                so.section, n, accept_min,
+            )
+            return None, last_err, "failed"
+        return None, last_err, "failed"
+
     # ── Phase 3: DeAI 去 AI 感润色 ──
     async def _phase_deai(self, result: StoryResult, plan: StoryPlan) -> StoryResult:
         """逐节去 AI 感润色 + 全文终润
@@ -319,7 +455,7 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
 
         for so in result.sections:
             original = so.text
-            orig_n = len(original)
+            orig_n = self._body_len(original)
             if orig_n < 100:
                 logger.warning("  第%d章 太短(%d字), 跳过", so.section, orig_n)
                 kept = f"{self._chapter_title_line(so)}\n\n{original}".rstrip()
@@ -328,47 +464,19 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
                 full_parts.append("")
                 continue
 
-            # 构建 prompt：用润色模板包裹本节正文
-            user = polish_tmpl.replace("{section}", original) if "{section}" in polish_tmpl else polish_tmpl.replace("{chapter}", original)
-            logger.info("  第%d节 (%d字)...", so.section, orig_n)
+            logger.info("  第%d章 (%d字)...", so.section, orig_n)
+            body, last_err, verdict = await self._polish_section(so, polish_tmpl, SYSTEM)
 
-            output = None
-            last_err = None
-
-            for attempt in range(3):
-                try:
-                    resp = await self.llm.chat(
-                        messages=[
-                            {"role": "system", "content": SYSTEM},
-                            {"role": "user", "content": user},
-                        ],
-                        temperature=0.82,
-                        max_tokens=6000,
-                    )
-                    text = resp.strip()
-                    if text and len(text) > 50:
-                        output = text
-                        break
-                    last_err = f"输出太短({len(text)}字)"
-                except Exception as e:
-                    last_err = str(e)
-                    if "429" in str(e) or "Rate" in str(e):
-                        wait = 5 * (2 ** attempt)
-                        logger.warning("    429 限流, 等%ds...", wait)
-                        await asyncio.sleep(wait)
-                    else:
-                        await asyncio.sleep(2)
-
-            if output:
-                # 模型可能自拟/篡改章号（如"第四章""第N章"），统一剥掉
-                # 再回填规范标题 `## 第N章`，保证全书章号连续正确
-                body = self._strip_chapter_header(output)
+            if body is not None:
                 final_text = f"{self._chapter_title_line(so)}\n\n{body}".rstrip()
-                pct = len(final_text) * 100 // orig_n if orig_n else 0
-                logger.info("    ✅ 第%d章: %d->%d字 (%d%%)", so.section, orig_n, len(final_text), pct)
+                final_n = self._body_len(final_text)
+                pct = final_n * 100 // orig_n if orig_n else 0
+                tag = {"ok": "✅", "truncated": "✂️", "best-effort": "⚠️"}.get(verdict, "✅")
+                logger.info("    %s 第%d章: %d->%d字 (%d%%) [%s]",
+                            tag, so.section, orig_n, final_n, pct, verdict)
                 polished = SectionOutput(
                     section=so.section, title=f"第{so.section}章",
-                    text=final_text, word_count=len(final_text.replace("\n","").replace(" ",""))
+                    text=final_text, word_count=final_n,
                 )
                 polished_sections.append(polished)
                 full_parts.append(final_text)
