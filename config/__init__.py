@@ -28,6 +28,23 @@ class AgentConfig:
 
 
 @dataclass
+class MultiPolishModelConfig:
+    """单个模型的润色配置。"""
+    name: str = ""              # 模型名，如 DeepSeek-V4-Pro
+    temperature: float = 0.8    # 采样温度
+    max_tokens: int = 12000     # 最大输出 token
+    prompt_version: str = "v4"  # 润色提示词版本
+
+
+@dataclass
+class MultiPolishConfig:
+    """多模型润色总配置。"""
+    enabled: bool = True
+    models: list[MultiPolishModelConfig] = field(default_factory=list)
+    max_concurrent: int = 3     # 最大并发数
+
+
+@dataclass
 class StudioConfig:
     # Backend selection
     backend: str = "llm"  # "llm" or "ollama"
@@ -57,6 +74,8 @@ class StudioConfig:
     # role 默认：scene_writer/showrunner/world_architect/character_designer → main_model；
     #           editor/continuity_keeper/title_designer/hooker/climax_designer/literary_advisor → light_model。
     agent_models: dict[str, str] = field(default_factory=dict)
+    # 多模型润色配置
+    multi_polish: MultiPolishConfig = field(default_factory=MultiPolishConfig)
     max_rounds: int = 3  # 每章自动修订上限（REVISE/REJECT 回灌重写的最大轮数）
     scene_writers: int = 3  # 并行写作的编剧数量
     max_context_chars: int = 60000  # build_context 总字符预算，超出按章节号倒序裁剪最旧摘要
@@ -124,6 +143,24 @@ def load_config(config_dir: str | Path = "", *, create_dirs: bool = True) -> Stu
         cfg.max_rounds = data.get("max_rounds", cfg.max_rounds)
         cfg.scene_writers = data.get("scene_writers", cfg.scene_writers)
         cfg.agent_models = data.get("agent_models", cfg.agent_models) or {}
+
+        # 多模型润色配置
+        mp_data = data.get("multi_polish", {})
+        if mp_data:
+            mp_models = []
+            for m in mp_data.get("models", []):
+                mp_models.append(MultiPolishModelConfig(
+                    name=m.get("name", ""),
+                    temperature=m.get("temperature", 0.8),
+                    max_tokens=m.get("max_tokens", 12000),
+                    prompt_version=m.get("prompt_version", "v4"),
+                ))
+            cfg.multi_polish = MultiPolishConfig(
+                enabled=mp_data.get("enabled", True),
+                models=mp_models,
+                max_concurrent=mp_data.get("max_concurrent", 3),
+            )
+
         cfg.max_context_chars = data.get("max_context_chars", cfg.max_context_chars)
         cfg.batch_size = data.get("batch_size", cfg.batch_size)
         cfg.merge_gate_rounds = data.get("merge_gate_rounds", cfg.merge_gate_rounds)

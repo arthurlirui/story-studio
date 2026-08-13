@@ -8,6 +8,7 @@
 - ``ss run batch``     批量并行写作
 - ``ss run revise``    重写单章
 - ``ss run style``     文学风格润色
+- ``ss run multi-polish`` 多模型润色对比
 """
 from __future__ import annotations
 
@@ -292,6 +293,153 @@ def run_style(
             out_file = out_dir / f"chapter_{chapter:03d}_{style}.md"
             out_file.write_text(polished, encoding="utf-8")
             console.print(f"[green]✅ 风格润色完成 -> {out_file}[/green]")
+        finally:
+            await client.aclose()
+
+    asyncio.run(_go())
+
+
+@app.command("multi-polish")
+def run_multi_polish(
+    chapter: Optional[int] = typer.Argument(None, min=1, help="要润色的章节号"),
+    models: Optional[str] = typer.Option(
+        None, "--models", "-m",
+        help="逗号分隔的模型名，如 DeepSeek-V4-Pro,qwen-plus（缺省从配置读取）",
+    ),
+    file: Optional[str] = typer.Option(
+        None, "--file", "-f",
+        help="直接指定文件路径（与章节号二选一）",
+    ),
+    prompt_version: str = typer.Option(
+        "v4", "--prompt-version", "-p",
+        help="润色提示词版本 v1-v4",
+    ),
+    max_concurrent: int = typer.Option(
+        3, "--max-concurrent", "-c", min=1, max=10,
+        help="最大并发数",
+    ),
+) -> None:
+    """多模型润色对比 — 用不同 LLM 同时润色，对比去 AI 效果。
+
+    示例:
+        ss run multi-polish 3 -m DeepSeek-V4-Pro,qwen-plus
+        ss run multi-polish --file path/to/chapter.md -m glm-4,deepseek-chat
+    """
+
+    async def _go():
+        cfg, orch, client = build_orch()
+        try:
+            # 解析模型列表
+            if models:
+                model_list = [m.strip() for m in models.split(",") if m.strip()]
+            elif cfg.multi_polish.models:
+                model_list = [m.name for m in cfg.multi_polish.models]
+            else:
+                console.print("[red]❌ 未指定模型，请用 --models 或在 settings.yaml 中配置 multi_polish.models[/red]")
+                raise typer.Exit(1)
+
+            if not model_list:
+                console.print("[red]❌ 模型列表为空[/red]")
+                raise typer.Exit(1)
+
+            # 读取文本
+            if file:
+                file_path = Path(file)
+                if not file_path.exists():
+                    console.print(f"[red]❌ 文件不存在: {file}[/red]")
+                    raise typer.Exit(1)
+                content = file_path.read_text(encoding="utf-8")
+                source_label = str(file_path)
+            elif chapter:
+                kd = Path(cfg.knowledge_dir)
+                chap_path = kd / "story" / "chapters" / f"chapter_{chapter:03d}.md"
+                if not chap_path.exists():
+                    console.print(f"[red]❌ 章节不存在: {chap_path}[/red]")
+                    raise typer.Exit(1)
+                content = chap_path.read_text(encoding="utf-8")
+                source_label = f"第{chapter}章"
+            else:
+                console.print("[red]❌ 请指定章节号或 --file[/red]")
+                raise typer.Exit(1)
+
+            console.print(f"[cyan]🔄 多模型润色对比: {source_label}[/cyan]")
+            console.print(f"   模型: {', '.join(model_list)}")
+            console.print(f"   并发数: {max_concurrent}")
+
+            # 创建润色器
+            from agents.multi_polisher import create_multi_polisher
+
+            prompt_file = Path(f"polish_prompt_{prompt_version}.txt")
+            if not prompt_file.exists():
+                prompt_file = Path("polish_prompt_v4.txt")
+
+            polisher = create_multi_polisher(
+                client=client,
+                models=model_list,
+                polish_prompt_path=str(prompt_file),
+                max_concurrent=max_concurrent,
+            )
+
+            report = await polisher.polish(content)
+
+            # ── Rich 表格输出 ──
+            from rich.table import Table
+
+            table = Table(title=f"📊 多模型润色对比 — {source_label}")
+            table.add_column("排名", style="dim", width=5)
+            table.add_column("模型", style="cyan")
+            table.add_column("de-AI 评分", justify="center")
+            table.add_column("评级", justify="center")
+            table.add_column("字数", justify="right")
+            table.add_column("耗时", justify="right")
+
+            for i, r in enumerate(report.ranked_results, 1):
+                if r.success:
+                    score_color = "green" if r.deai_score >= 35 else "yellow" if r.deai_score >= 25 else "red"
+                    table.add_row(
+                        f"#{i}",
+                        r.model_name,
+                        f"[{score_color}]{r.deai_score}/50[/{score_color}]",
+                        r.grade,
+                        f"{r.word_count:,}",
+                        f"{r.latency_ms:.0f}ms",
+                    )
+                else:
+                    table.add_row(
+                        f"#{i}",
+                        r.model_name,
+                        "—",
+                        "[red]失败[/red]",
+                        "—",
+                        "—",
+                    )
+
+            console.print(table)
+
+            # 保存结果
+            kd = Path(cfg.knowledge_dir)
+            out_dir = kd / "output" / "multi-polish"
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            if chapter:
+                stem = f"chapter_{chapter:03d}"
+            else:
+                stem = Path(file).stem if file else "output"
+
+            for r in report.results:
+                if r.success:
+                    safe_model = r.model_name.replace("/", "_").replace("\\", "_")
+                    out_file = out_dir / f"{stem}_{safe_model}.md"
+                    out_file.write_text(r.polished_text, encoding="utf-8")
+                    console.print(f"  [dim]💾 {r.model_name} -> {out_file}[/dim]")
+
+            # 保存对比报告
+            report_path = out_dir / f"{stem}_report.md"
+            report_path.write_text(report.summary, encoding="utf-8")
+            console.print(f"  [dim]📋 报告 -> {report_path}[/dim]")
+
+            console.print(f"[green]✅ 多模型润色完成[/green]")
+
         finally:
             await client.aclose()
 
