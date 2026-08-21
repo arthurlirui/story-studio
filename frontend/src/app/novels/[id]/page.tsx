@@ -265,8 +265,11 @@ export default function NovelDetailPage({
 
         <TabsContent value="outline">
           <Card>
-            <CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle className="text-base">大纲</CardTitle>
+              <Button asChild size="sm" variant="outline">
+                <Link href={"/novels/" + id + "/outline"}>编辑大纲</Link>
+              </Button>
             </CardHeader>
             <CardContent>
               <pre className="whitespace-pre-wrap text-sm font-sans max-h-[400px] overflow-y-auto">

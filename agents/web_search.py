@@ -148,12 +148,20 @@ class DoubaoSearchProvider(WebSearchProvider):
         if isinstance(data, dict) and data.get("error") is not None:
             logger.warning("Doubao search error: %s", data.get("error"))
             return []
+        # 豆包 FeedCoop 错误响应：{"ResponseMetadata": {"Error": {"Message": ...}}}
+        if isinstance(data, dict):
+            meta = data.get("ResponseMetadata")
+            if isinstance(meta, dict) and meta.get("Error"):
+                err = meta["Error"]
+                logger.warning("Doubao search error: %s", err.get("Message") or err)
+                return []
 
         # 可能的载荷形态：
         # 1. {"data": {"webPages": {"value": [...]}}}
         # 2. {"webPages": {"value": [...]}}
         # 3. {"results": [...]}
         # 4. {"items": [...]}
+        # 5. {"Result": {"WebResults": [...]}}（豆包 FeedCoop 实际结构）
         items: list = []
         if isinstance(data, dict):
             for path in (
@@ -163,6 +171,7 @@ class DoubaoSearchProvider(WebSearchProvider):
                 ("results",),
                 ("items",),
                 ("data", "items"),
+                ("Result", "WebResults"),
             ):
                 cur: Any = data
                 ok = True
@@ -182,9 +191,13 @@ class DoubaoSearchProvider(WebSearchProvider):
         for it in items:
             if not isinstance(it, dict):
                 continue
-            title = it.get("title") or it.get("name") or ""
-            snippet = it.get("snippet") or it.get("summary") or it.get("content") or ""
-            url = it.get("url") or it.get("link") or ""
+            title = it.get("title") or it.get("Title") or it.get("name") or ""
+            snippet = (
+                it.get("snippet") or it.get("Snippet")
+                or it.get("summary") or it.get("Summary")
+                or it.get("content") or ""
+            )
+            url = it.get("url") or it.get("Url") or it.get("link") or ""
             if not (title or snippet or url):
                 continue
             out.append(SearchResult(

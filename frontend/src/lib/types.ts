@@ -118,6 +118,33 @@ export interface WorkLogEntry {
   excerpt?: string;
 }
 
+// ── 大纲结构化模型（与后端 outline_format.py 对齐） ──────────
+
+/** 单章大纲五要素 */
+export interface ChapterOutline {
+  num: number;
+  title: string;
+  events: string[];
+  characters: string[];
+  hook: string;
+  word_estimate: number;
+}
+
+/** 整份大纲：书名 + 设计说明 + 章节列表 */
+export interface OutlineDoc {
+  book_title: string;
+  preamble: string;
+  chapters: ChapterOutline[];
+}
+
+export interface OutlineSaveResult {
+  job_id: string;
+  saved: boolean;
+  total_chapters: number | null;
+  parsed_chapters: number;
+  outline_chars: number;
+}
+
 export const PHASE_LABELS: Record<Phase, string> = {
   idle: "待启动",
   research: "调研",

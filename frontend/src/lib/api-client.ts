@@ -37,7 +37,7 @@ async function request<T>(
 
 // ── Novels / Jobs ──────────────────────────────────────────
 
-import type { Job, NovelCreate, ChapterContent, TaskPlan, CostSummary, QualityData, Chapter } from "./types";
+import type { Job, NovelCreate, ChapterContent, TaskPlan, CostSummary, QualityData, Chapter, OutlineDoc, OutlineSaveResult } from "./types";
 
 export async function listNovels(): Promise<{ novels: Job[] }> {
   return request("/novels");
@@ -86,6 +86,27 @@ export async function getTasks(jobId: string): Promise<{ job_id: string; plan: T
 
 export async function getOutline(jobId: string): Promise<{ job_id: string; outline: string }> {
   return request(`/novels/${jobId}/outline`);
+}
+
+export async function getOutlineStructured(jobId: string): Promise<OutlineDoc & { job_id: string }> {
+  return request(`/novels/${jobId}/outline/structured`);
+}
+
+export function saveOutlineStructured(
+  jobId: string,
+  doc: OutlineDoc,
+): Promise<OutlineSaveResult> {
+  return request(`/novels/${jobId}/outline`, {
+    method: "PUT",
+    body: JSON.stringify({ structured: doc }),
+  });
+}
+
+export function saveOutlineRaw(jobId: string, outline: string): Promise<OutlineSaveResult> {
+  return request(`/novels/${jobId}/outline`, {
+    method: "PUT",
+    body: JSON.stringify({ outline }),
+  });
 }
 
 export async function getWorld(jobId: string): Promise<{ job_id: string; docs: string[]; summary: string }> {
