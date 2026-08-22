@@ -2,12 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useTheme } from "next-themes";
 import {
   LayoutDashboard,
   BookOpen,
   Briefcase,
   Settings,
   Sparkles,
+  Sun,
+  Moon,
 } from "lucide-react";
 
 import {
@@ -22,6 +25,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import { Button } from "@/components/ui/button";
 
 const navItems = [
   { href: "/", label: "仪表盘", icon: LayoutDashboard },
@@ -33,6 +37,7 @@ const navItems = [
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const { resolvedTheme, setTheme } = useTheme();
 
   return (
     <Sidebar>
@@ -40,7 +45,7 @@ export function AppSidebar() {
         <div className="flex items-center gap-2 px-2 py-1.5">
           <Sparkles className="h-6 w-6 text-primary" />
           <div className="flex flex-col">
-            <span className="text-sm font-semibold">Story Studio</span>
+            <span className="text-sm font-semibold font-heading">Story Studio</span>
             <span className="text-xs text-muted-foreground">AI 小说创作平台</span>
           </div>
         </div>
@@ -70,8 +75,18 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter>
-        <div className="px-2 py-1.5 text-xs text-muted-foreground">
-          14 Agents · 去AI化引擎
+        <div className="flex items-center justify-between px-2 py-1.5">
+          <span className="text-xs text-muted-foreground">14 Agents · 去AI化引擎</span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            aria-label="切换主题"
+            onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+          >
+            <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+            <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
+          </Button>
         </div>
       </SidebarFooter>
     </Sidebar>

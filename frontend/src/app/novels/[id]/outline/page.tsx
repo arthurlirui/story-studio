@@ -2,6 +2,7 @@
 
 import { use, useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -34,6 +35,12 @@ import {
 } from "lucide-react";
 
 const DEFAULT_WORD_ESTIMATE = 2500;
+
+// ProseMirror 不支持 SSR，动态加载编辑器
+const MarkdownEditor = dynamic(() => import("@/components/markdown-editor"), {
+  ssr: false,
+  loading: () => <div className="text-muted-foreground text-sm">加载编辑器...</div>,
+});
 
 function emptyChapter(num: number): ChapterOutline {
   return {
@@ -272,12 +279,12 @@ export default function OutlineEditorPage({
   // ── 渲染 ───────────────────────────────────────────────────
 
   if (loading) {
-    return <div className="flex-1 p-6 text-muted-foreground">加载中...</div>;
+    return <div className="text-muted-foreground">加载中...</div>;
   }
 
   if (loadError) {
     return (
-      <div className="flex-1 space-y-4 p-6">
+      <div className="space-y-4">
         <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
           ⚠️ {loadError}
         </div>
@@ -291,7 +298,7 @@ export default function OutlineEditorPage({
   const isEmpty = chapters.length === 0;
 
   return (
-    <div className="flex-1 space-y-4 p-6">
+    <div className="space-y-4">
       {/* 顶栏 */}
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -304,7 +311,7 @@ export default function OutlineEditorPage({
             <h1 className="text-xl font-bold">大纲编辑</h1>
             <p className="text-xs text-muted-foreground mt-0.5">
               共 {chapters.length} 章 · 预估总字数 {totalWords.toLocaleString()}
-              {dirty && <span className="ml-2 text-amber-600 dark:text-amber-400">● 有未保存更改</span>}
+              {dirty && <span className="ml-2 text-primary">● 有未保存更改</span>}
             </p>
           </div>
         </div>
@@ -341,17 +348,18 @@ export default function OutlineEditorPage({
       )}
 
       {mode === "source" ? (
-        /* ── 源码模式 ── */
+        /* ── 源码模式（Milkdown 富文本编辑器） ── */
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">
-            直接编辑 Markdown。保存时由后端解析；章节头需为「## 第N章：标题」，字段为加粗的核心事件/出场角色/章节悬念钩子/字数预估。
+            直接编辑 Markdown，实时预览。保存时由后端解析；章节头需为「## 第N章：标题」，字段为加粗的核心事件/出场角色/章节悬念钩子/字数预估。
           </p>
-          <Textarea
-            value={sourceText}
-            onChange={(e) => setSourceText(e.target.value)}
-            className="min-h-[65vh] font-mono text-xs leading-relaxed"
-            spellCheck={false}
-            aria-label="大纲 Markdown 源码"
+          {/* key 随 sourceText 的"已保存基准"变化时重建编辑器，确保外部重置/切换同步 */}
+          <MarkdownEditor
+            key={`outline-source-${mode}`}
+            defaultValue={sourceText}
+            onChange={setSourceText}
+            placeholder="大纲 Markdown 源码..."
+            className="min-h-[65vh] border rounded-md"
           />
         </div>
       ) : (

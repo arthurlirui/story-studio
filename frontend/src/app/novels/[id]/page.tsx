@@ -142,7 +142,7 @@ export default function NovelDetailPage({
   const isRunning = job.status === "running";
 
   return (
-    <div className="flex-1 space-y-6 p-6">
+    <div className="space-y-6">
       {/* 顶部信息 */}
       <div className="flex items-start justify-between">
         <div>
@@ -272,7 +272,7 @@ export default function NovelDetailPage({
               </Button>
             </CardHeader>
             <CardContent>
-              <pre className="whitespace-pre-wrap text-sm font-sans max-h-[400px] overflow-y-auto">
+              <pre className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap font-serif max-h-[400px] overflow-y-auto">
                 {outline || "(暂无大纲)"}
               </pre>
             </CardContent>
@@ -357,19 +357,19 @@ export default function NovelDetailPage({
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <p className="text-xs text-muted-foreground">总调用次数</p>
-                      <p className="text-2xl font-bold">{cost.total_calls}</p>
+                      <p className="text-2xl font-bold">{(cost.total_calls ?? 0)}</p>
                     </div>
                     <div>
                       <p className="text-xs text-muted-foreground">总 Token 数</p>
-                      <p className="text-2xl font-bold">{cost.total_tokens.toLocaleString()}</p>
+                      <p className="text-2xl font-bold">{(cost.total_tokens ?? 0).toLocaleString?.() ?? cost.total_tokens}</p>
                     </div>
                   </div>
                   <div className="space-y-2">
-                    {Object.entries(cost.by_model).map(([model, bucket]) => (
+                    {Object.entries(cost.by_model ?? cost).filter(([, v]) => typeof v === "object").map(([model, bucket]) => (
                       <div key={model} className="flex items-center justify-between border-b pb-2">
                         <span className="text-sm font-medium">{model}</span>
                         <div className="text-right text-xs text-muted-foreground">
-                          <div>{bucket.calls} 次 · {bucket.total_tokens.toLocaleString()} tokens</div>
+                          <div>{bucket.calls} 次 · {(bucket.total_tokens ?? 0).toLocaleString?.() ?? bucket.total_tokens} tokens</div>
                         </div>
                       </div>
                     ))}

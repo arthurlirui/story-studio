@@ -13,6 +13,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { createNovel } from "@/lib/api-client";
 
 export default function NewNovelPage() {
@@ -47,7 +48,7 @@ export default function NewNovelPage() {
   }
 
   return (
-    <div className="flex-1 space-y-6 p-6 max-w-2xl">
+    <div className="max-w-2xl">
       <h1 className="text-2xl font-bold">创建新小说</h1>
 
       <Card>
@@ -60,9 +61,9 @@ export default function NewNovelPage() {
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="brief">创作需求</Label>
-            <textarea
+            <Textarea
               id="brief"
-              className="flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="min-h-[120px]"
               placeholder="例：一个关于急诊室医生的故事，探讨生死抉择与人性，都市现实主义风格，目标番茄小说平台..."
               value={brief}
               onChange={(e) => setBrief(e.target.value)}

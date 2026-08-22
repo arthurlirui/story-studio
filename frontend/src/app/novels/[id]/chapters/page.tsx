@@ -41,7 +41,7 @@ export default function ChaptersPage({
   }
 
   return (
-    <div className="flex-1 space-y-6 p-6">
+    <div className="space-y-6">
       <h1 className="text-2xl font-bold">章节地图</h1>
 
       {loading ? (

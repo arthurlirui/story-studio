@@ -81,7 +81,7 @@ export default function DashboardPage() {
   const failed = novels.filter((n) => n.status === "failed").length;
 
   return (
-    <div className="flex-1 space-y-6 p-6">
+    <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">仪表盘</h1>
         <Badge variant={healthy ? "default" : "destructive"} aria-label={healthy ? "后端在线" : "后端离线"}>
