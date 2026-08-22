@@ -5,6 +5,7 @@
 - GET    /novels            列出所有 job
 - GET    /novels/{id}       查看单个 job 状态
 - GET    /novels/{id}/chapters/{n}  读取某章节正文
+- PUT    /novels/{id}/chapters/{n}  保存用户编辑的章节正文
 - POST   /novels/{id}/revise  触发某 job 重写指定章节
 - POST   /novels/{id}/batch  批次并行写作
 - DELETE /novels/{id}       取消/删除 job
@@ -79,6 +80,10 @@ class NovelRevise(BaseModel):
     chapter: int = Field(..., description="要重写的章节号", ge=1)
 
 
+class ChapterSave(BaseModel):
+    content: str = Field(..., description="章节正文 Markdown 内容")
+
+
 class BatchWrite(BaseModel):
     start_chapter: int = Field(..., description="起始章节号", ge=1)
     count: int = Field(..., description="本批次章节数", ge=1, le=20)
@@ -128,6 +133,27 @@ async def get_chapter(job_id: str, chapter_num: int):
     if not chapter_path.exists():
         raise HTTPException(status_code=404, detail=f"chapter {chapter_num} not found")
     return {"chapter": chapter_num, "content": chapter_path.read_text(encoding="utf-8")}
+
+
+@router.put("/novels/{job_id}/chapters/{chapter_num}")
+async def save_chapter(job_id: str, chapter_num: int, req: ChapterSave):
+    """保存用户编辑的章节正文。
+
+    复用 KnowledgeStore.save_chapter：原子写入 chapter_NNN.md，
+    同时快照到 revisions/ 目录（author="user"），自带版本历史。
+    job 运行中拒绝写入（AI 管线也在写这些文件）。
+    """
+    runner = get_runner()
+    job = runner.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.status == JOB_RUNNING or job.status == JOB_QUEUED:
+        raise HTTPException(status_code=409, detail="job still running, cannot save chapter")
+
+    from agents.knowledge import create_knowledge_store
+    ks = create_knowledge_store(job.knowledge_dir, None, None)
+    ks.save_chapter(chapter_num, req.content, author="user")
+    return {"chapter": chapter_num, "saved": True, "chars": len(req.content)}
 
 
 @router.post("/novels/{job_id}/revise")
