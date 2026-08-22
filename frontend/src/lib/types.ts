@@ -174,3 +174,54 @@ export const STATUS_LABELS: Record<JobStatus, string> = {
   cancelled: "已取消",
   recoverable: "可恢复",
 };
+
+// ── 全局配置（与后端 config/settings.yaml + GET/PUT /config 对齐） ──
+
+/** 多模型润色中的单个模型配置 */
+export interface MultiPolishModel {
+  name: string;
+  temperature: number;
+  max_tokens: number;
+  prompt_version: string;
+}
+
+/** 全局配置（GET /config 返回，敏感字段已脱敏） */
+export interface StudioSettings {
+  // 连接与模型
+  backend: "llm" | "ollama";
+  llm_base_url: string;
+  llm_api_key: string; // 脱敏，只读
+  main_model: string;
+  light_model: string;
+  ollama_host: string;
+  // 生成流水线
+  max_rounds: number;
+  scene_writers: number;
+  batch_size: number;
+  max_context_chars: number;
+  merge_gate_rounds: number;
+  rate_limit_delay: number;
+  // 调研与润色
+  web_search_provider: "doubao" | "bocha" | "mock";
+  web_search_api_key: string; // 脱敏，只读
+  web_search_endpoint: string;
+  research_enabled: boolean;
+  research_max_topics: number;
+  multi_polish: {
+    enabled: boolean;
+    max_concurrent: number;
+    models: MultiPolishModel[];
+  };
+  // 智能体模型路由：role -> model_name
+  agent_models: Record<string, string>;
+  // 只读展示
+  api_key: string; // 脱敏，只读
+  knowledge_dir: string; // 只读
+  output_dir: string; // 只读
+}
+
+/** PUT /config 返回 */
+export interface ConfigUpdateResult {
+  updated: string[];
+  rejected: Record<string, string>;
+}

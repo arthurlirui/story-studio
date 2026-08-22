@@ -1,18 +1,25 @@
 """``ss config`` - 查看与编辑配置。
 
 模块名 config_cmd 避免与顶层 config/ 包冲突。
+读写逻辑复用 ``config.io``，与 API ``/config`` 端点共享，保证行为一致。
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Optional
 
 import typer
 import yaml
 from rich.panel import Panel
 
-from cli._common import console, mask_secret, print_json
+from cli._common import console, print_json
+from config.io import (
+    SENSITIVE,
+    apply_update,
+    coerce_value,
+    load_raw,
+    mask_secret,
+    save_raw,
+)
 
 app = typer.Typer(
     name="config",
@@ -30,36 +37,20 @@ def _config_path() -> Path:
     return Path("config") / "settings.yaml"
 
 
-def _load_raw() -> dict:
-    p = _config_path()
-    if not p.exists():
-        return {}
-    return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-
-
-def _save_raw(data: dict) -> None:
-    p = _config_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(yaml.dump(data, allow_unicode=True, default_flow_style=False, sort_keys=False), encoding="utf-8")
-
-
-# 敏感字段：show 时脱敏
-_SENSITIVE = {"llm_api_key", "web_search_api_key", "api_key"}
-
-
 @app.command("show")
 def config_show() -> None:
     """脱敏打印当前 settings.yaml。"""
-    data = _load_raw()
+    p = _config_path()
+    data = load_raw(p)
     if not data:
-        console.print(f"[yellow]无配置文件: {_config_path()}[/yellow]")
+        console.print(f"[yellow]无配置文件: {p}[/yellow]")
         console.print("可用模板: config/settings.example.yaml")
         return
 
     # 脱敏副本
     masked = {}
     for k, v in data.items():
-        if k in _SENSITIVE and isinstance(v, str) and v:
+        if k in SENSITIVE and isinstance(v, str) and v:
             masked[k] = mask_secret(v)
         elif k == "agent_models" and isinstance(v, dict):
             masked[k] = v  # 模型路由不含密钥
@@ -67,7 +58,7 @@ def config_show() -> None:
             masked[k] = v
 
     body = yaml.dump(masked, allow_unicode=True, default_flow_style=False, sort_keys=False)
-    console.print(Panel(body, title=f"⚙️ {_config_path()}", border_style="cyan"))
+    console.print(Panel(body, title=f"⚙️ {p}", border_style="cyan"))
 
 
 @app.command("path")
@@ -81,7 +72,7 @@ def config_get(
     key: str = typer.Argument(..., help="配置键（如 llm_api_key / main_model / batch_size）"),
 ) -> None:
     """读取单个配置值。"""
-    data = _load_raw()
+    data = load_raw(_config_path())
     # 支持点分路径（agent_models.scene_writer）
     parts = key.split(".")
     val = data
@@ -92,7 +83,7 @@ def config_get(
             console.print(f"[dim]键 {key} 不存在[/dim]")
             raise typer.Exit(1)
     # 敏感值脱敏
-    if parts[-1] in _SENSITIVE and isinstance(val, str) and val:
+    if parts[-1] in SENSITIVE and isinstance(val, str) and val:
         val = mask_secret(val)
     console.print(val)
 
@@ -107,21 +98,13 @@ def config_set(
     自动类型推断：true/false -> bool，纯数字 -> int，其余为 str。
     不允许通过 CLI 设置敏感字段（llm_api_key 等），请手动编辑文件。
     """
-    if key in _SENSITIVE:
+    if key in SENSITIVE:
         console.print(f"[red]❌ 拒绝通过 CLI 设置敏感字段 {key}，请手动编辑 {_config_path()}[/red]")
         raise typer.Exit(1)
 
-    data = _load_raw()
+    data = load_raw(_config_path())
     # 类型推断
-    if value.lower() in ("true", "false"):
-        new_val: object = value.lower() == "true"
-    elif value.lstrip("-").isdigit():
-        new_val = int(value)
-    else:
-        try:
-            new_val = float(value)
-        except ValueError:
-            new_val = value
+    new_val = coerce_value(value)
 
     # 支持点分路径
     parts = key.split(".")
@@ -132,5 +115,5 @@ def config_set(
         cur = cur[p]
     cur[parts[-1]] = new_val
 
-    _save_raw(data)
+    save_raw(_config_path(), data)
     console.print(f"[green]✅ {key} = {new_val!r}[/green] -> {_config_path()}")

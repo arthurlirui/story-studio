@@ -14,6 +14,11 @@ export function setApiKey(key: string): void {
   }
 }
 
+/** 读取已存的 API 密钥（导出版，供 settings 页预填）。 */
+export function getStoredApiKey(): string | null {
+  return getApiKey();
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
@@ -37,7 +42,7 @@ async function request<T>(
 
 // ── Novels / Jobs ──────────────────────────────────────────
 
-import type { Job, NovelCreate, ChapterContent, TaskPlan, CostSummary, QualityData, Chapter, OutlineDoc, OutlineSaveResult } from "./types";
+import type { Job, NovelCreate, ChapterContent, TaskPlan, CostSummary, QualityData, Chapter, OutlineDoc, OutlineSaveResult, StudioSettings, ConfigUpdateResult } from "./types";
 
 export async function listNovels(): Promise<{ novels: Job[] }> {
   return request("/novels");
@@ -74,6 +79,17 @@ export async function listChapters(jobId: string): Promise<{ job_id: string; cha
 
 export async function getChapter(jobId: string, chapterNum: number): Promise<ChapterContent> {
   return request(`/novels/${jobId}/chapters/${chapterNum}`);
+}
+
+export async function saveChapter(
+  jobId: string,
+  chapterNum: number,
+  content: string,
+): Promise<{ chapter: number; saved: boolean; chars: number }> {
+  return request(`/novels/${jobId}/chapters/${chapterNum}`, {
+    method: "PUT",
+    body: JSON.stringify({ content }),
+  });
 }
 
 // ── Tasks ──────────────────────────────────────────────────
@@ -156,4 +172,17 @@ export async function checkHealth(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// ── Config / Settings ─────────────────────────────────────
+
+export async function getConfig(): Promise<StudioSettings> {
+  return request("/config");
+}
+
+export async function setConfig(patch: Partial<StudioSettings>): Promise<ConfigUpdateResult> {
+  return request("/config", {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
 }

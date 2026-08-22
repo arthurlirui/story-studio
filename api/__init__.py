@@ -94,11 +94,13 @@ def create_app() -> FastAPI:
     from api.knowledge import router as knowledge_router
     from api.series import router as series_router
     from api.stream import router as stream_router
+    from api.config import router as config_router
 
     app.include_router(novels_router, tags=["novels"])
     app.include_router(knowledge_router, tags=["knowledge"])
     app.include_router(series_router, tags=["series"])
     app.include_router(stream_router, tags=["stream"])
+    app.include_router(config_router, tags=["config"])
 
     @app.get("/health")
     async def health():
