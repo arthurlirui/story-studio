@@ -28,6 +28,10 @@ cp config/settings.example.yaml config/settings.yaml
 
 # 方式 2：用环境变量
 export LLM_API_KEY="sk-..."
+
+# 联网搜索（豆包/Bocha）key：写入 .env（已被 .gitignore 忽略）
+cp .env.example .env
+# 编辑 .env，填入 WEB_SEARCH_API_KEY=...
 ```
 
 ### 启动
@@ -93,6 +97,9 @@ python main.py --new "写一个赛博朋克侦探故事"  # 旧式 flag 仍可�
 ### 完稿交付
 润色版 `_final.md`、清洗版 `_final.txt`、简介 `_synopsis.txt`、封面 brief JSON + 英文提示词
 
+### 大纲结构化编辑
+`outline_format.py` 提供大纲 Markdown ↔ 结构化 `OutlineDoc`（书名/设计说明/逐章五要素：标题、核心事件、出场角色、悬念钩子、字数预估）双向转换，解析容错、渲染格式与写作流水线的正则解析器严格兼容（往返一致性由测试锁定）。前端 `/novels/{id}/outline` 页面支持结构化卡片编辑（增删章节、上下移动、折叠、角色标签输入）与 Markdown 源码模式切换，保存时自动重排章号并同步 `run_state.json` 的总章节数。
+
 ---
 
 ## 🧠 去AI感 (deai)
@@ -117,13 +124,18 @@ python main.py --new "写一个赛博朋克侦探故事"  # 旧式 flag 仍可�
 
 ---
 
-## 🔍 联网搜索 MCP
+## 🔍 联网搜索
 
-项目集成了火山引擎官方 `mcp-server-askecho-search-infinity`，通过 API Key 鉴权接入豆包搜索：
+内置 `agents/web_search.py` 提供统一搜索接口，支持多 provider 工厂切换：
 
-- **工具名**：`mcp__doubao-search__web_search`
-- **功能**：中文网页/图片搜索，支持时间范围过滤、权威等级筛选
-- **配置**：`~/.zcode/cli/config.json` → `mcp.servers.doubao-search`
+| Provider | 端点 | 说明 |
+|----------|------|------|
+| `doubao`（默认） | `https://open.feedcoopapi.com/search_api/web_search` | 火山引擎豆包搜索，中文网页/图片搜索 |
+| `bocha` | `https://api.bochaai.com/v1/ai/search` | 博查搜索 |
+| `mock` | — | 本地桩，无需 API key，返回空结果 |
+
+- **配置**：`config/settings.yaml` 的 `web_search_provider` / `web_search_api_key` / `web_search_endpoint`；`web_search_api_key` 留空时自动回退读取环境变量 `WEB_SEARCH_API_KEY`（见 `.env`）
+- **调用**：`agents.web_search.get_search_provider(cfg)` 工厂返回 provider 实例，`await provider.search(query, count)` 返回 `SearchResult` 列表
 
 ---
 
@@ -178,7 +190,7 @@ python main.py --new "写一个赛博朋克侦探故事"  # 旧式 flag 仍可�
 | `/status` | 系统状态（含累计 token 成本） |
 | `/help` | 帮助 |
 
-### REST API + SSE（24 端点，详见 docs/API.md）
+### REST API + SSE（详见 docs/API.md）
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/novels` | 提交新小说 Job |
@@ -186,13 +198,18 @@ python main.py --new "写一个赛博朋克侦探故事"  # 旧式 flag 仍可�
 | GET  | `/novels/{id}` | 查看 Job 状态 |
 | GET  | `/novels/{id}/chapters` | 章节列表（含去AI分/verdict） |
 | GET  | `/novels/{id}/chapters/{n}` | 读取章节正文 |
-| GET  | `/novels/{id}/outline` `/world` `/characters` | 知识库读取 |
+| GET  | `/novels/{id}/outline` | 大纲全文（Markdown） |
+| GET  | `/novels/{id}/outline/structured` | 大纲结构化 JSON（书名/章节五要素） |
+| PUT  | `/novels/{id}/outline` | 保存大纲（结构化或 Markdown，自动同步 run_state） |
+| GET  | `/novels/{id}/world` `/characters` | 知识库读取 |
 | GET  | `/novels/{id}/cost` `/quality` | 成本/质量仪表盘 |
 | POST | `/novels/{id}/revise` `/batch` | 重写/批次写作 |
 | POST | `/novels/{id}/run-all` `/resume` | 执行/恢复 |
 | GET  | `/novels/{id}/stream/{chapter}` | **SSE** token 流式生成 |
 | GET  | `/novels/{id}/events` | **SSE** job 进度 |
 | GET  | `/novels/{id}/agents/events` | **SSE** 智能体活动 |
+| GET  | `/config` | 读取全局配置（脱敏） |
+| PUT  | `/config` | 更新配置字段 |
 | GET  | `/series` `/genres` | 系列/类型列表 |
 | GET  | `/health` | 健康检查 |
 
@@ -245,6 +262,7 @@ story-studio/
 ├── output/               # 📦 成品输出（gitignored）
 ├── orchestrator.py       # 🎭 编排器（5 phase + 自动修订）
 ├── orchestrator_state.py # 💾 RunState 持久化
+├── outline_format.py     # 📝 大纲 Markdown ↔ 结构化双向转换
 ├── jobs.py               # 📋 JobRunner（多并发）
 ├── api/                  # 🌐 FastAPI REST + SSE API 包
 │   ├── __init__.py       #    app 构造 + CORS + 鉴权
@@ -260,9 +278,9 @@ story-studio/
 │   ├── status.py / repl.py
 │   └── _common.py        #    Rich 输出 helpers
 ├── frontend/             # 🖥️ Next.js + shadcn/ui 前端
-│   ├── src/app/          #    仪表盘/小说/章节/任务/设置
-│   ├── src/lib/          #    API client + SSE hooks + 类型
-│   └── src/components/   #    shadcn UI 组件
+│   ├── src/app/          #    仪表盘/小说/章节/任务/设置/大纲编辑
+│   ├── src/lib/          #    API client + SSE hooks + 类型 + outline-format
+│   └── src/components/   #    shadcn UI 组件 + Markdown 编辑器
 ├── main.py               # 🚀 兼容入口（委托 cli.main:app）
 ├── docs/                 # 📖 CLI.md + API.md 文档
 ├── polish_prompt.txt     # ✨ 独立润色 prompt（含去AI感第 12 条）
@@ -295,7 +313,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-覆盖：agent 模块、自动修订循环、RunState 持久化、RunCost 核算、章节摘要 + 预算裁剪、文本清洗、LLM 客户端、JobRunner、REST API 等共 330+ 用例。
+覆盖：agent 模块、自动修订循环、RunState 持久化、RunCost 核算、章节摘要 + 预算裁剪、文本清洗、LLM 客户端、JobRunner、REST API、大纲格式解析/渲染往返一致性等共 450+ 用例。
 
 ---
 
