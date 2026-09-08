@@ -72,7 +72,7 @@ class FailingLLMClient:
 
 class TestMultiModelPolisherCreation:
     def test_create_with_defaults(self):
-        from agents.multi_polisher import MultiModelPolisher
+        from agents.tools.multi_polisher import MultiModelPolisher
 
         client = FakeLLMClient()
         polisher = MultiModelPolisher(
@@ -85,14 +85,14 @@ class TestMultiModelPolisherCreation:
         assert polisher.default_max_tokens == 12000
 
     def test_create_requires_models(self):
-        from agents.multi_polisher import MultiModelPolisher
+        from agents.tools.multi_polisher import MultiModelPolisher
 
         client = FakeLLMClient()
         with pytest.raises(ValueError, match="models 不能为空"):
             MultiModelPolisher(client=client, models=[])
 
     def test_create_requires_valid_prompt_file(self):
-        from agents.multi_polisher import MultiModelPolisher
+        from agents.tools.multi_polisher import MultiModelPolisher
 
         client = FakeLLMClient()
         with pytest.raises(FileNotFoundError, match="不存在"):
@@ -103,7 +103,7 @@ class TestMultiModelPolisherCreation:
             )
 
     def test_factory_function(self):
-        from agents.multi_polisher import create_multi_polisher, MultiModelPolisher
+        from agents.tools.multi_polisher import create_multi_polisher, MultiModelPolisher
 
         client = FakeLLMClient()
         polisher = create_multi_polisher(
@@ -122,7 +122,7 @@ class TestMultiModelPolisherCreation:
 class TestPolishFlow:
     def test_single_model_polish(self, tmp_path: Path):
         """单模型润色基本流程。"""
-        from agents.multi_polisher import MultiModelPolisher
+        from agents.tools.multi_polisher import MultiModelPolisher
 
         client = FakeLLMClient({"model-a": "润色后的文字，AI感显著降低。"})
         polisher = MultiModelPolisher(
@@ -144,7 +144,7 @@ class TestPolishFlow:
 
     def test_multi_model_concurrent_polish(self, tmp_path: Path):
         """多模型并发润色：每个模型收到独立调用。"""
-        from agents.multi_polisher import MultiModelPolisher
+        from agents.tools.multi_polisher import MultiModelPolisher
 
         responses = {
             "model-a": "模型A的润色结果。",
@@ -179,7 +179,7 @@ class TestPolishFlow:
 
     def test_results_sorted_by_score(self, tmp_path: Path):
         """结果按 deai_score 降序排列。"""
-        from agents.multi_polisher import MultiModelPolisher
+        from agents.tools.multi_polisher import MultiModelPolisher
 
         # 不同评分的响应（给不同文本以产生不同评分）
         client = FakeLLMClient()
@@ -202,7 +202,7 @@ class TestPolishFlow:
 class TestErrorHandling:
     def test_one_model_fails_others_succeed(self, tmp_path: Path):
         """单个模型失败不影响其他模型的润色。"""
-        from agents.multi_polisher import MultiModelPolisher
+        from agents.tools.multi_polisher import MultiModelPolisher
 
         client = FailingLLMClient(failing_models={"bad-model"})
         polisher = MultiModelPolisher(
@@ -236,7 +236,7 @@ class TestErrorHandling:
 
     def test_polish_result_grade(self):
         """PolishResult.grade 返回正确的评级。"""
-        from agents.multi_polisher import PolishResult
+        from agents.tools.multi_polisher import PolishResult
 
         r = PolishResult(model_name="test", deai_score=50)
         assert "优秀" in r.grade
@@ -252,7 +252,7 @@ class TestErrorHandling:
 
     def test_error_sentinel_handling(self, tmp_path: Path):
         """LLM 返回错误哨兵时正确处理为失败。"""
-        from agents.multi_polisher import MultiModelPolisher
+        from agents.tools.multi_polisher import MultiModelPolisher
         from agents.llm_client import LLM_ERROR_PREFIX
 
         error_response = f"{LLM_ERROR_PREFIX}: 服务暂时不可用]"
@@ -272,7 +272,7 @@ class TestErrorHandling:
 
     def test_empty_text_skipped(self, tmp_path: Path):
         """空文本直接跳过。"""
-        from agents.multi_polisher import MultiModelPolisher
+        from agents.tools.multi_polisher import MultiModelPolisher
 
         client = FakeLLMClient()
         polisher = MultiModelPolisher(
@@ -293,7 +293,7 @@ class TestErrorHandling:
 class TestPolishFile:
     def test_polish_file_saves_results(self, tmp_path: Path):
         """polish_file 保存各模型结果和报告。"""
-        from agents.multi_polisher import MultiModelPolisher
+        from agents.tools.multi_polisher import MultiModelPolisher
 
         # 创建输入文件
         input_file = tmp_path / "test_chapter.md"
@@ -334,7 +334,7 @@ class TestPolishFile:
 
     def test_polish_file_nonexistent_input(self):
         """不存在的输入文件抛 FileNotFoundError。"""
-        from agents.multi_polisher import MultiModelPolisher
+        from agents.tools.multi_polisher import MultiModelPolisher
 
         client = FakeLLMClient()
         polisher = MultiModelPolisher(
@@ -413,7 +413,7 @@ class TestConfigLoading:
 class TestReport:
     def test_ranked_results(self):
         """ranked_results 按 deai_score 降序。"""
-        from agents.multi_polisher import MultiModelPolishReport, PolishResult
+        from agents.tools.multi_polisher import MultiModelPolishReport, PolishResult
 
         report = MultiModelPolishReport(results=[
             PolishResult(model_name="low", deai_score=20),
@@ -428,7 +428,7 @@ class TestReport:
 
     def test_success_and_fail_counts(self):
         """success_count 和 fail_count 正确统计。"""
-        from agents.multi_polisher import MultiModelPolishReport, PolishResult
+        from agents.tools.multi_polisher import MultiModelPolishReport, PolishResult
 
         report = MultiModelPolishReport(results=[
             PolishResult(model_name="a", success=True),

@@ -1,6 +1,6 @@
 # 🎭 Story Studio
 
-> 11 位 AI Agent 协作创作 · 去AI化引擎 · 联网搜索 MCP · 自动修订质量门 · REST API
+> 14 位 AI Agent 协作创作 · 去AI化引擎 · 联网搜索 + 时代热词 · 自动修订质量门 · REST API · Milkdown 富文本编辑
 
 ---
 
@@ -62,13 +62,14 @@ python main.py --new "写一个赛博朋克侦探故事"  # 旧式 flag 仍可�
 
 ## 🤖 Agent 团队
 
-11 位 Agent + 1 个去AI化引擎，按角色分两层模型路由：
+14 位 Agent + 1 个去AI化引擎，按角色分两层模型路由：
 
 | Agent | 角色 | tier | 职责 |
 |-------|------|------|------|
 | 🎬 **总策划** (Showrunner) | 主编 | main | 任务分配、质量评审、方向把控 |
 | 🌍 **世界观架构师** | 设定师 | main | 世界观规则、时间线、地理文化 |
 | 👤 **角色设计师** | 造人 | main | 角色档案、性格、成长弧线、**语言指纹** |
+| 👤 **角色心理学家** | 造心 | main | 角色深层动机、心理冲突、行为推演 |
 | 📖 **场景编剧** | 写手 | main | 章节创作、对话、**去AI感写作纪律** |
 | ✍️ **编辑** | 文案 | light | 文风统一、**8 维度去AI感检测** |
 | 🎯 **文学顾问** | 军师 | light | 叙事结构、技巧推荐、章节摘要 |
@@ -76,7 +77,9 @@ python main.py --new "写一个赛博朋克侦探故事"  # 旧式 flag 仍可�
 | 🏷️ **标题设计师** | 命名 | light | 书名、章节标题（7 种番茄验证公式） |
 | 🪝 **钩子设计师** | 留客 | light | 12 种钩子类型、**反模板章尾设计** |
 | 🔥 **爽点设计师** | 高潮 | light | 8 大爽点原型、情绪循环调度 |
-| 💡 **创新顾问** | 亮点 | light | 题材辨识度优化、反同质化创新 |
+| 💡 **创新顾问** | 亮点 | main | 题材辨识度优化、反同质化创新 |
+| 🔎 **选题研究员** | 调研 | light | 按选题方向联网搜集素材，存入研究知识库 |
+| 🔥 **热词研究员** | 造梗 | light | 按时代检索网络热词（微博/短视频/流行语），注入场景写作 |
 
 ---
 
@@ -98,7 +101,13 @@ python main.py --new "写一个赛博朋克侦探故事"  # 旧式 flag 仍可�
 润色版 `_final.md`、清洗版 `_final.txt`、简介 `_synopsis.txt`、封面 brief JSON + 英文提示词
 
 ### 大纲结构化编辑
-`outline_format.py` 提供大纲 Markdown ↔ 结构化 `OutlineDoc`（书名/设计说明/逐章五要素：标题、核心事件、出场角色、悬念钩子、字数预估）双向转换，解析容错、渲染格式与写作流水线的正则解析器严格兼容（往返一致性由测试锁定）。前端 `/novels/{id}/outline` 页面支持结构化卡片编辑（增删章节、上下移动、折叠、角色标签输入）与 Markdown 源码模式切换，保存时自动重排章号并同步 `run_state.json` 的总章节数。
+`outline_format.py` 提供大纲 Markdown ↔ 结构化 `OutlineDoc`（书名/设计说明/逐章五要素：标题、核心事件、出场角色、悬念钩子、字数预估）双向转换，解析容错、渲染格式与写作流水线的正则解析器严格兼容（往返一致性由测试锁定）。前端 `/novels/{id}/outline` 页面支持结构化卡片编辑（增删章节、上下移动、折叠、角色标签输入）与 Markdown 源码模式（Milkdown 实时预览）切换，保存时自动重排章号并同步 `run_state.json` 的总章节数。
+
+### 章节富文本编辑 + 自动保存
+前端章节页（`/novels/{id}/chapters/{n}`）集成 Milkdown WYSIWYG 编辑器，支持阅读/编辑模式切换。编辑时 1.5s debounce 自动保存到后端，状态指示器实时显示「保存中/已保存/保存失败」；退出编辑前 flush 未保存内容，`beforeunload` 守卫防止意外丢失。流式生成期间禁用编辑。
+
+### 设置页全局配置
+`/settings` 页面四 Tab 分区（连接与模型 / 生成流水线 / 调研与润色 / 智能体路由），通过 `GET/PUT /config` 读写 `settings.yaml`。敏感字段（API Key）脱敏只读，只读字段（目录路径）拒绝写入，可写字段白名单校验。去AI化引擎参数（激进度/字数比/审计阈值/重试上限/提示词版本）、多模型润色、14 个智能体的 per-agent 模型路由均可在此配置，保存后热重载使新任务立即生效。
 
 ---
 
@@ -120,7 +129,17 @@ python main.py --new "写一个赛博朋克侦探故事"  # 旧式 flag 仍可�
 `editor.py` 内置 **8 维度检测清单**（🔴/🟡 分级 + 量化阈值）：词汇痕迹 → 句式均匀 → 段落模板 → 过度升华 → 细节抽象 → 情绪标签 → 对话失真 → 网文套路。附扩充动作替代速查表（10 种情绪 × 多种生理反应）。
 
 ### 层三：引擎工具（批量后处理）
-独立 `deai/` 模块：24 类 AI 写作痕迹检测规则（基于 Humanizer-zh），四层流水线：正则扫描 → 规则确定性重写（删除/弱化/同义词变异/段落碎片化/长句拆分）→ LLM 重写兜底 → 反 AI 审计 + 0-50 质量评分。
+独立 `deai/` 模块：24 类 AI 写作痕迹检测规则（基于 Humanizer-zh），四层流水线：正则扫描 → 规则确定性重写（删除/弱化/同义词变异/段落碎片化/长句拆分）→ LLM 重写兜底 → 反 AI 审计 + 0-50 质量评分。模块组成：
+
+| 文件 | 职责 |
+|------|------|
+| `engine.py` | DeaiEngine 四层流水线（检测→规则重写→LLM 重写→审计评分） |
+| `rules.py` | 24 类 AI 痕迹检测 + 确定性重写规则 |
+| `detector.py` / `tencent_detector.py` | AI 文风检测器（本地规则 / 腾讯云 API） |
+| `pipeline.py` | `make_engine_from_cfg` + `deai_pass` 封装，供 CLI pipeline 调用 |
+| `prompts/rewrite_v1.txt` | LLM 重写提示词（版本化，对应 `deai.prompt_version`） |
+
+引擎参数全部可在设置页或 `settings.yaml` 的 `deai` 段配置：`enabled` / `aggressiveness`（0-1 重写激进度）/ `length_min_ratio` / `length_max_ratio`（润色前后字数合规区间）/ `polish_max_attempts`（重试上限）/ `audit_threshold`（终审评分低于此值触发重写）/ `prompt_version`。
 
 ---
 
@@ -139,9 +158,15 @@ python main.py --new "写一个赛博朋克侦探故事"  # 旧式 flag 仍可�
 
 ---
 
+## 🔥 时代热词 (Trending Words)
+
+`agents/research/trending_words.py` 的热词研究员在 Phase 2.5（`trending_enabled=true` 时）按小说所处时代检索 4 类查询：网络流行语 / 微博热搜 / 短视频热梗 / 社会热点话题。每条热词含词、含义、典型用法、出处年代，落盘到 `world/trending_words.md`，在场景写作阶段按章节 era 查表注入——避免唐朝角色说 yyds，为对话提供时代语感。与联网搜索共用 `WebSearchProvider`，无需额外配置。
+
+---
+
 ## 🏗️ 网文方法论
 
-基于番茄小说平台 + 签约作者经验的方法论体系（commit `de71915`），已注入 11 个 Agent 的 system prompt：
+基于番茄小说平台 + 签约作者经验的方法论体系（commit `de71915`），已注入 14 个 Agent 的 system prompt：
 
 | 方法论 | 注入位置 | 核心规则 |
 |--------|---------|---------|
@@ -208,10 +233,13 @@ python main.py --new "写一个赛博朋克侦探故事"  # 旧式 flag 仍可�
 | GET  | `/novels/{id}/stream/{chapter}` | **SSE** token 流式生成 |
 | GET  | `/novels/{id}/events` | **SSE** job 进度 |
 | GET  | `/novels/{id}/agents/events` | **SSE** 智能体活动 |
-| GET  | `/config` | 读取全局配置（脱敏） |
-| PUT  | `/config` | 更新配置字段 |
+| GET  | `/config` | 读取全局配置（敏感字段脱敏） |
+| PUT  | `/config` | 更新配置字段（白名单校验，写回后热重载） |
+| GET  | `/config/paths` | 配置文件路径与 jobs 目录（只读） |
 | GET  | `/series` `/genres` | 系列/类型列表 |
 | GET  | `/health` | 健康检查 |
+
+> **⚠️ 安全提示**：REST API 使用单一 `X-API-Key` header 鉴权（`config/settings.yaml` 的 `api_key` 字段），前端将密钥存储在 localStorage 中。此方案**仅适合本地开发/单用户部署**，不要直接暴露到公网。如需远程访问，请在前面加反向代理 + HTTPS + 额外鉴权层。
 
 ---
 
@@ -219,27 +247,44 @@ python main.py --new "写一个赛博朋克侦探故事"  # 旧式 flag 仍可�
 
 ```
 story-studio/
-├── agents/               # 🧠 11 个 Agent 模块 + 基础设施
+├── agents/               # 🧠 14 个 Agent 模块 + 基础设施
 │   ├── base.py           #    Agent 基类
 │   ├── llm_client.py     #    LLM API 客户端（连接池 + 超时重试）
+│   ├── ollama_client.py  #    Ollama 本地模型客户端
 │   ├── knowledge.py      #    知识库（双层级：系列 + 变体）
-│   ├── text_cleaner.py   #    正文清洗（md→txt）
-│   ├── showrunner.py     #    🎬 总策划
-│   ├── world_architect.py #   🌍 世界观架构师
-│   ├── character_designer.py # 👤 角色设计师（语言指纹）
-│   ├── scene_writer.py   #    📖 场景编剧（去AI感 7 条纪律）
-│   ├── editor.py         #    ✍️ 编辑（去AI感 8 维度检测）
-│   ├── literary_advisor.py #  🎯 文学顾问
-│   ├── continuity.py     #    🔍 连续性检查员
-│   ├── title_designer.py #    🏷️ 标题设计师
-│   ├── hooker.py         #    🪝 钩子设计师（反模板）
-│   ├── climax_designer.py #   🔥 爽点设计师
-│   ├── innovator.py      #    💡 创新顾问
-│   └── style_polisher.py #    🎨 风格润色器（LoRA 莫言风格）
+│   ├── coordinator.py    #    BatchCoordinator 批次协调
+│   ├── utils.py          #    通用工具（章节大纲提取等）
+│   ├── worklog.py        #    工作日志记录
+│   ├── creative/         #    创作线 Agent（11 个）
+│   │   ├── showrunner.py     #    🎬 总策划
+│   │   ├── world_architect.py #   🌍 世界观架构师
+│   │   ├── character_designer.py # 👤 角色设计师（语言指纹）
+│   │   ├── character_psychologist.py # 👤 角色心理学家
+│   │   ├── scene_writer.py   #    📖 场景编剧（去AI感 7 条纪律）
+│   │   ├── editor.py         #    ✍️ 编辑（去AI感 8 维度检测）
+│   │   ├── literary_advisor.py #  🎯 文学顾问
+│   │   ├── continuity.py     #    🔍 连续性检查员
+│   │   ├── title_designer.py #    🏷️ 标题设计师
+│   │   ├── hooker.py         #    🪝 钩子设计师（反模板）
+│   │   └── climax_designer.py #   🔥 爽点设计师
+│   ├── research/         #    调研线 Agent（3 个）
+│   │   ├── topic_researcher.py #  🔎 选题研究员
+│   │   ├── innovator.py      #    💡 创新顾问
+│   │   └── trending_words.py #    🔥 热词研究员（时代热词注入）
+│   └── tools/            #    工具 Agent
+│       ├── web_search.py     #    联网搜索（豆包/博查/Mock）
+│       ├── style_polisher.py #    🎨 风格润色器（LoRA 莫言风格）
+│       ├── multi_polisher.py #    多模型交叉润色
+│       └── text_cleaner.py   #    正文清洗（md→txt）
 ├── deai/                 # 🧹 去AI化引擎
 │   ├── __init__.py       #    双轨说明
 │   ├── engine.py         #    DeaiEngine（四层流水线）
-│   └── rules.py          #    24 类 AI 痕迹检测规则
+│   ├── rules.py          #    24 类 AI 痕迹检测规则
+│   ├── detector.py       #    本地 AI 文风检测器
+│   ├── tencent_detector.py #  腾讯云 AI 检测 API
+│   ├── pipeline.py       #    make_engine_from_cfg + deai_pass 封装
+│   └── prompts/          #    LLM 重写提示词（版本化）
+│       └── rewrite_v1.txt
 ├── series/               # 📚 系列工程（10 个创作宇宙）
 │   ├── 千行百业/          #    现代职业百态
 │   ├── 哥伦布计划/        #    西方热门题材短篇
@@ -258,32 +303,40 @@ story-studio/
 ├── templates/            # 📋 封面设计模板
 ├── tools/                # 🔧 ComfyUI 封面生成
 ├── config/               # ⚙️ 配置
+│   ├── settings.yaml     #    运行配置（gitignored）
+│   ├── settings.example.yaml # 示例配置
+│   └── io.py             #    配置读写共享逻辑（CLI + API 共用）
 ├── knowledge/            # 📚 运行时知识库（gitignored）
 ├── output/               # 📦 成品输出（gitignored）
-├── orchestrator.py       # 🎭 编排器（5 phase + 自动修订）
+├── orchestrator.py       # 🎭 编排器（6 phase + 自动修订 + 热词注入）
 ├── orchestrator_state.py # 💾 RunState 持久化
 ├── outline_format.py     # 📝 大纲 Markdown ↔ 结构化双向转换
+├── planner.py            # 📋 任务计划器（phase → task 映射）
 ├── jobs.py               # 📋 JobRunner（多并发）
 ├── api/                  # 🌐 FastAPI REST + SSE API 包
-│   ├── __init__.py       #    app 构造 + CORS + 鉴权
+│   ├── __init__.py       #    app 构造 + CORS + 鉴权 + lazy JobRunner
 │   ├── legacy.py         #    novels/tasks CRUD
-│   ├── knowledge.py      #    知识库读取端点
+│   ├── knowledge.py      #    知识库 + 质量/成本读取端点
 │   ├── series.py         #    系列/类型只读端点
-│   └── stream.py         #    SSE 流式端点
+│   ├── stream.py         #    SSE 流式端点（token/job/agent）
+│   └── config.py         #    配置读写端点（GET/PUT /config）
 ├── cli/                  # 💻 Typer 统一 CLI
 │   ├── main.py           #    根 app + 全局选项
 │   ├── run.py / jobs.py  #    子命令组
+│   ├── short.py / short_core.py # 短篇命令
+│   ├── pipeline_core.py  #    流水线阶段执行（含 deai 阶段）
 │   ├── novels.py / export.py
 │   ├── config_cmd.py / agents.py
-│   ├── status.py / repl.py
+│   ├── status.py / repl.py / health.py
 │   └── _common.py        #    Rich 输出 helpers
 ├── frontend/             # 🖥️ Next.js + shadcn/ui 前端
 │   ├── src/app/          #    仪表盘/小说/章节/任务/设置/大纲编辑
 │   ├── src/lib/          #    API client + SSE hooks + 类型 + outline-format
-│   └── src/components/   #    shadcn UI 组件 + Markdown 编辑器
+│   └── src/components/   #    shadcn UI + Milkdown Markdown 编辑器
+├── short_story/          # 📖 短篇生成引擎
+├── daily_novels/         # 📅 日常批量生成 pipeline
 ├── main.py               # 🚀 兼容入口（委托 cli.main:app）
 ├── docs/                 # 📖 CLI.md + API.md 文档
-├── polish_prompt.txt     # ✨ 独立润色 prompt（含去AI感第 12 条）
 ├── pyproject.toml        # 📦 项目元数据 + [project.scripts] ss
 └── ARCHITECTURE.md       # 📐 架构设计
 ```
@@ -313,7 +366,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-覆盖：agent 模块、自动修订循环、RunState 持久化、RunCost 核算、章节摘要 + 预算裁剪、文本清洗、LLM 客户端、JobRunner、REST API、大纲格式解析/渲染往返一致性等共 450+ 用例。
+覆盖：agent 模块、自动修订循环、RunState 持久化、RunCost 核算、章节摘要 + 预算裁剪、文本清洗、LLM 客户端、JobRunner、REST API、大纲格式解析/渲染往返一致性、去AI化引擎、配置读写等共 525+ 用例。
 
 ---
 

@@ -42,4 +42,4 @@ build-backend = "setuptools.build_meta"
 # 显式声明包：避免 setuptools flat-layout 自动发现因 series/ skills/ 等数据
 # 目录报 "Multiple top-level packages" 错误。
 py-modules = []
-packages = ["cli", "config", "agents", "deai", "short_story", "tools", "gui"]
+packages = ["cli", "config", "agents", "agents.creative", "agents.research", "agents.tools", "deai", "short_story", "tools", "gui"]

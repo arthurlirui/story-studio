@@ -70,6 +70,13 @@
   │ Title Designer  │ │ Hooker          │ │ Climax Designer │
   │ • 书名/章节标题  │ │ • 章节钩子/悬念  │ │ • 爽点节奏/高潮  │
   └─────────────────┘ └─────────────────┘ └─────────────────┘
+
+  调研/热词（Phase 0 / 2.5，可选）：
+  ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+  │ 🔎 选题研究员    │ │ 💡 创新顾问      │ │ 🔥 热词研究员    │
+  │ Topic Researcher│ │ Innovator       │ │ Trending Words  │
+  │ • 题材素材搜集   │ │ • 创新亮点生成   │ │ • 时代热词检索   │
+  └─────────────────┘ └─────────────────┘ └─────────────────┘
 ```
 
 ### 模型路由
@@ -77,7 +84,7 @@
 按角色分两层（可在 `settings.yaml` 的 `agent_models` 里逐个覆盖）：
 
 - **main tier**（走 `main_model`）：scene_writer / showrunner / world_architect / character_designer
-- **light tier**（走 `light_model`）：editor / continuity_keeper / literary_advisor / title_designer / hooker / climax_designer / innovator / topic_researcher / style_polisher
+- **light tier**（走 `light_model`）：editor / continuity_keeper / literary_advisor / title_designer / hooker / climax_designer / innovator / topic_researcher / trending_words / style_polisher
 
 ### 2.1 🎬 总策划 (Showrunner)
 
@@ -211,6 +218,13 @@
 ### 3.1 标准工作流
 
 ```
+Phase 0: 调研（可选，research_enabled=true 时执行）
+─────────────────────────────────────────────────
+  Topic Researcher → 按默认选题方向搜集素材（存入知识库 research/）
+  Innovator → 基于调研结果生成创新亮点建议
+    ↓
+  Showrunner 参考调研成果进入策划
+
 Phase 1: 策划
 ─────────────
   用户输入创作需求
@@ -226,6 +240,13 @@ Phase 2: 建立
   Character Designer → 角色详细档案 (存入知识库)
     ↓
   Showrunner 审阅 → 通过/修订
+
+Phase 2.5: 热词（可选，trending_enabled=true 时执行）
+─────────────────────────────────────────────────────
+  TrendingWords → 按时代检索网络热词（微博/短视频/社会热点/网络流行语）
+    → 每条含词/含义/典型用法/出处年代/适用角色
+    → 存入知识库 world/trending_words + research/trending_{era}
+  目的：避免时代错位（唐朝角色不该说 yyds），为场景写作提供时代语感
 
 Phase 3: 大纲
 ─────────────
@@ -310,13 +331,28 @@ python main.py --job-cancel <id>  # 取消 Job
 **REST API（`uvicorn api:app` 或 `python -m api`）**
 
 ```
-POST   /novels                  — 提交新小说 Job
-GET    /novels                  — 列出所有 Job
-GET    /novels/{id}             — 查看 Job 状态/进度
-GET    /novels/{id}/chapters/{n} — 读取某章正文
-POST   /novels/{id}/revise      — 触发修订
-DELETE /novels/{id}             — 取消 Job
-GET    /health                  — 健康检查
+POST   /novels                       — 提交新小说 Job
+GET    /novels                        — 列出所有 Job
+GET    /novels/{id}                   — 查看 Job 状态/进度
+DELETE /novels/{id}                   — 取消 Job
+GET    /novels/{id}/chapters          — 章节列表（含去AI分/verdict）
+GET    /novels/{id}/chapters/{n}      — 读取章节正文
+PUT    /novels/{id}/chapters/{n}      — 保存章节编辑
+GET    /novels/{id}/outline           — 大纲全文（Markdown）
+GET    /novels/{id}/outline/structured — 大纲结构化 JSON
+PUT    /novels/{id}/outline           — 保存大纲（结构化或 Markdown）
+GET    /novels/{id}/world /characters — 知识库读取
+GET    /novels/{id}/cost /quality     — 成本/质量仪表盘
+POST   /novels/{id}/revise /batch     — 重写/批次写作
+POST   /novels/{id}/run-all /resume   — 执行/恢复
+GET    /novels/{id}/stream/{chapter}  — SSE token 流式生成
+GET    /novels/{id}/events            — SSE job 进度
+GET    /novels/{id}/agents/events     — SSE 智能体活动
+GET    /config                        — 读取全局配置（脱敏）
+PUT    /config                        — 更新配置（白名单 + 热重载）
+GET    /config/paths                  — 配置文件路径（只读）
+GET    /series /genres                — 系列/类型列表
+GET    /health                        — 健康检查
 ```
 
 ---
@@ -503,8 +539,9 @@ knowledge/
 - [ ] **多语言创作**: 支持中英文及翻译
 - [x] **Web 界面**: FastAPI REST API + SSE 流式接口（`api/` 包）；Next.js + shadcn/ui 前端（`frontend/`）
   - CLI：`ss` 统一命令（Typer + Rich），见 `docs/CLI.md`
-  - API：24 端点（REST + SSE），见 `docs/API.md`
-  - 前端：仪表盘 / 项目总览 / 章节阅读器（流式生成）/ 质量热力图
+  - API：27 端点（REST + SSE），见 `docs/API.md`
+  - 前端：仪表盘 / 项目总览 / 章节阅读器（流式生成 + Milkdown 富文本编辑 + 自动保存）/ 质量热力图 / 大纲结构化编辑 / 设置页（四 Tab 全局配置：连接模型/生成流水线/调研润色/智能体路由）
+  - 去AI化引擎 `deai/pipeline.py` 集成到 CLI pipeline 的 deai 阶段（规则清洗 + LLM 重写 + 审计）
 - [ ] **ComfyUI 真实渲染**: 当前封面为 `--dry-run` 提示词，未来接 ComfyUI 出图
 
 ---

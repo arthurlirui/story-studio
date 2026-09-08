@@ -2,6 +2,7 @@
 
 大纲本体是 Markdown（knowledge/story/outline.md），每章约定五要素：
 章节标题 / 核心事件 / 出场角色 / 章节悬念钩子 / 字数预估。
+另有可选的「时代」字段（时代/时间点/年代），供热词研究员按章节时间点检索网络热词。
 
 本模块提供 parse_outline / render_outline 双向转换：
 - parse 容错：字段缺失给默认值；不含章节头的文本整体视为 preamble
@@ -70,9 +71,10 @@ _CHAPTER_HEAD_RE = re.compile(
 )
 
 # 章内字段标记：**核心事件**：…（加粗/列表前缀/冒号均可省，行内可带值）
+# era 字段为可选，支持 时代/时间点/年代 三种标签写法
 _FIELD_RE = re.compile(
     r"^(?:[*+\-]\s*)?\**\s*"
-    r"(?P<label>核心事件|出场角色|(?:章节)?悬念(?:\s*[/／]\s*钩子)?|钩子|字数预估)"
+    r"(?P<label>核心事件|出场角色|(?:章节)?悬念(?:\s*[/／]\s*钩子)?|钩子|字数预估|时代|时间点|年代)"
     r"\s*\**\s*[:：]?\s*(?P<inline>.*)$"
 )
 
@@ -88,13 +90,14 @@ _BOOK_TITLE_RE = re.compile(r"^#\s+《(?P<title>[^》]+)》.*$", re.MULTILINE)
 
 @dataclass
 class ChapterOutline:
-    """单章大纲的五要素。"""
+    """单章大纲的要素。era 为可选的时间点/时代标注，供热词注入按章节时代查表。"""
     num: int = 0
     title: str = ""
     events: list[str] = field(default_factory=list)
     characters: list[str] = field(default_factory=list)
     hook: str = ""
     word_estimate: int = DEFAULT_WORD_ESTIMATE
+    era: str = ""
 
 
 @dataclass
@@ -185,12 +188,17 @@ def _parse_chapter_block(head: re.Match, body: str) -> ChapterOutline:
         fm = _FIELD_RE.match(stripped)
         if fm:
             label = fm.group("label")
-            # 「章节悬念/钩子」与「钩子」归一化为 hook
-            current = "hook" if "钩子" in label or "悬念" in label else (
-                "events" if label == "核心事件" else
-                "characters" if label == "出场角色" else
-                "word_estimate"
-            )
+            # 「章节悬念/钩子」与「钩子」归一化为 hook；时代/时间点/年代 → era
+            if "钩子" in label or "悬念" in label:
+                current = "hook"
+            elif label == "核心事件":
+                current = "events"
+            elif label == "出场角色":
+                current = "characters"
+            elif label == "字数预估":
+                current = "word_estimate"
+            else:  # 时代 / 时间点 / 年代
+                current = "era"
             bucket = fields.setdefault(current, [])
             inline = fm.group("inline").strip()
             if inline:
@@ -217,6 +225,14 @@ def _parse_chapter_block(head: re.Match, body: str) -> ChapterOutline:
             word_estimate = int(digits)
             break
 
+    # era 为单值字段，取首个非空行
+    era = ""
+    for line in fields.get("era", []):
+        line = line.strip()
+        if line:
+            era = line
+            break
+
     return ChapterOutline(
         num=num or 0,
         title=title,
@@ -224,6 +240,7 @@ def _parse_chapter_block(head: re.Match, body: str) -> ChapterOutline:
         characters=characters,
         hook=hook,
         word_estimate=word_estimate,
+        era=era,
     )
 
 
@@ -237,4 +254,6 @@ def _render_chapter(ch: ChapterOutline) -> str:
     lines.append(f"*   **出场角色**：{'、'.join(ch.characters)}")
     lines.append(f"*   **章节悬念/钩子**：{ch.hook}")
     lines.append(f"*   **字数预估**：{ch.word_estimate}字")
+    if ch.era:
+        lines.append(f"*   **时代**：{ch.era}")
     return "\n".join(lines)

@@ -249,7 +249,7 @@ def run_style(
     """文学风格润色（本地 Qwen + LoRA）。"""
 
     if list_styles:
-        from agents.style_polisher import STYLE_REGISTRY
+        from agents.tools.style_polisher import STYLE_REGISTRY
         if not STYLE_REGISTRY:
             console.print("[dim]无可用风格[/dim]")
             return
@@ -271,7 +271,7 @@ def run_style(
         cfg, orch, client = build_orch()
         try:
             from pathlib import Path
-            from agents.style_polisher import STYLE_REGISTRY, create_style_polisher
+            from agents.tools.style_polisher import STYLE_REGISTRY, create_style_polisher
 
             if style not in STYLE_REGISTRY:
                 console.print(f"[red]❌ 未知风格 {style}，可用: {', '.join(STYLE_REGISTRY.keys())}[/red]")
@@ -367,7 +367,7 @@ def run_multi_polish(
             console.print(f"   并发数: {max_concurrent}")
 
             # 创建润色器
-            from agents.multi_polisher import create_multi_polisher
+            from agents.tools.multi_polisher import create_multi_polisher
 
             prompt_file = Path(f"polish_prompt_{prompt_version}.txt")
             if not prompt_file.exists():

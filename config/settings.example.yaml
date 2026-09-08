@@ -35,12 +35,13 @@ merge_gate_rounds: 1    # 融合门冲突章定向重写的轮数上限
 
 # ── Per-agent 模型路由（可选）──
 # 缺键回退 role 默认：main tier (scene_writer/showrunner/world_architect/
-# character_designer) → main_model；light tier (editor/continuity_keeper/
-# title_designer/hooker/climax_designer/literary_advisor) → light_model。
+# character_designer/character_psychologist/innovator) → main_model；
+# light tier (editor/continuity_keeper/title_designer/hooker/climax_designer/
+# literary_advisor/topic_researcher/trending_words) → light_model。
 # 显式指定可覆盖默认：
 # agent_models:
 #   editor: "deepseek-r1-32b"
-#   showrunner: "deepseek-v4-pro"
+#   trending_words: "deepseek-v4-pro"
 
 # ── 网络搜索 + 私有知识库（调研阶段）──
 web_search_provider: "doubao"   # "doubao" | "bocha" | "mock"
@@ -48,9 +49,26 @@ web_search_api_key: ""          # 留空从环境变量 WEB_SEARCH_API_KEY 读�
 web_search_endpoint: ""         # 留空用 provider 默认 endpoint
 research_enabled: true          # 关闭则跳过 research/innovate 任务
 research_max_topics: 4          # 检索主题数（热点/重要事件/同类小说/创作手法）
+trending_enabled: true          # 关闭则跳过 trending（热词研究）任务
 
 # ── REST API 鉴权（可选）──
 # 留空则不启用鉴权（仅适合本地/内网部署）。设置后所有 /novels* 端点
 # 要求请求头 X-API-Key 匹配该值；/health 始终开放。
 # 也可通过环境变量 STORY_STUDIO_API_KEY 注入。
 api_key: ""
+
+# ── 去AI化引擎（deai stage + 终审质量门）──
+# enabled: false 时 deai stage 回退裸润色、终审跳过 audit（行为等价旧版）
+# aggressiveness: 0.0-1.0，规则重写激进程度（同义词变异/段落碎片化/长句拆分触发概率）
+# length_min/max_ratio: 润色前后字数合规区间（润色后字数 / 原文字数），超出触发重试/截断
+# polish_max_attempts: 短篇逐节润色重试次数（1 次初试 + N 次字数/异常重试）
+# prompt_version: DeaiEngine LLM 重写提示词版本，对应 deai/prompts/rewrite_{version}.txt
+# audit_threshold: 终审 audit 评分低于此值触发一轮重写（0-50 分制，35 = "良好"线下限）
+deai:
+  enabled: true
+  aggressiveness: 0.4
+  length_min_ratio: 0.90
+  length_max_ratio: 1.15
+  polish_max_attempts: 4
+  prompt_version: "v1"
+  audit_threshold: 35

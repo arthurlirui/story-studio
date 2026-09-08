@@ -14,6 +14,7 @@ export type Phase =
   | "innovate"
   | "planning"
   | "building"
+  | "trending"
   | "outlining"
   | "writing"
   | "complete";
@@ -151,6 +152,7 @@ export const PHASE_LABELS: Record<Phase, string> = {
   innovate: "创新亮点",
   planning: "策划",
   building: "设定",
+  trending: "热词",
   outlining: "大纲",
   writing: "写作",
   complete: "完稿",
@@ -161,6 +163,7 @@ export const PHASE_ORDER: Phase[] = [
   "innovate",
   "planning",
   "building",
+  "trending",
   "outlining",
   "writing",
   "complete",
@@ -185,6 +188,17 @@ export interface MultiPolishModel {
   prompt_version: string;
 }
 
+/** 去AI化引擎配置（与后端 config.DeaiConfig 对齐） */
+export interface DeaiSettings {
+  enabled: boolean;
+  aggressiveness: number;       // 0.0-1.0 规则重写激进程度
+  length_min_ratio: number;     // 润色后/原文字数下限
+  length_max_ratio: number;     // 润色后/原文字数上限
+  polish_max_attempts: number;  // 字数不合规时重试上限
+  prompt_version: string;       // LLM 重写提示词版本（对应 deai/prompts/rewrite_{version}.txt）
+  audit_threshold: number;      // 终审 audit 评分低于此值触发重写（0-50）
+}
+
 /** 全局配置（GET /config 返回，敏感字段已脱敏） */
 export interface StudioSettings {
   // 连接与模型
@@ -207,17 +221,26 @@ export interface StudioSettings {
   web_search_endpoint: string;
   research_enabled: boolean;
   research_max_topics: number;
+  trending_enabled: boolean;
   multi_polish: {
     enabled: boolean;
     max_concurrent: number;
     models: MultiPolishModel[];
   };
+  // 去AI化引擎
+  deai: DeaiSettings;
   // 智能体模型路由：role -> model_name
   agent_models: Record<string, string>;
   // 只读展示
   api_key: string; // 脱敏，只读
   knowledge_dir: string; // 只读
   output_dir: string; // 只读
+}
+
+/** GET /config/paths 返回 */
+export interface ConfigPaths {
+  config_file: string;
+  jobs_dir: string;
 }
 
 /** PUT /config 返回 */

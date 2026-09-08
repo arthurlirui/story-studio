@@ -111,6 +111,21 @@ def list_taskfiles(tasks_dir: Path) -> list[Path]:
     return sorted(tasks_dir.glob("*.json"))
 
 
+def print_taskfile_list(tasks_dir: Path) -> None:
+    """打印可用 taskfile 列表（--list 功能）。"""
+    files = list_taskfiles(tasks_dir)
+    if not files:
+        print("没有找到 taskfiles (tasks/*.json)")
+        return
+    print(f"可用任务 ({len(files)}):")
+    for f in files:
+        try:
+            t = json.loads(f.read_text("utf-8"))
+        except Exception:
+            t = {}
+        print(f"  {f.stem:20s} — {t.get('display_name', '?')}")
+
+
 def load_taskfile(name: str, tasks_dir: Path) -> dict | None:
     """加载 taskfile JSON。"""
     if not name.endswith(".json"):
@@ -242,12 +257,28 @@ async def run_write_chapters(orch, name: str, total: int, batch: int) -> bool:
 
 
 async def run_deai(orch, name: str, total: int, proj_root: Path) -> bool:
-    """去AI感润色模块。"""
+    """去AI感润色模块。
+
+    流程：
+    1. （可选）DeaiEngine.process() 规则清洗 + LLM 重写 + audit
+    2. 加载 polish_prompt 作为润色标准，逐章 LLM 润色
+    3. 每章3次重试 + 429指数退避
+    4. 输出到 output/polished/，audit 摘要写入同名 .audit.txt
+    """
     logger.info("    === deai 去AI感润色: %s ===", name)
 
     ch_dir = Path(orch.cfg.knowledge_dir) / "story" / "chapters"
     out_dir = Path(orch.cfg.output_dir) / "polished"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 去AI化引擎（cfg.deai.enabled=False 时为 None，跳过规则清洗）
+    from deai.pipeline import make_engine_from_cfg
+    deai_engine = make_engine_from_cfg(orch.cfg, orch.client)
+    if deai_engine:
+        logger.info("    DeaiEngine 已启用 (aggr=%.2f, prompt=%s)",
+                    deai_engine.aggr, deai_engine.prompt_version)
+    else:
+        logger.info("    DeaiEngine 未启用，仅走 polish_prompt 润色")
 
     # 加载润色模板（优先 v4 → v3 → v2 → v1）
     prompt_path_v4 = proj_root / "polish_prompt_v4.txt"
@@ -288,7 +319,16 @@ async def run_deai(orch, name: str, total: int, proj_root: Path) -> bool:
         if len(original) < 100:
             continue
 
-        user = f"以下是待润色的章节正文，请直接输出润色后的纯净草内容（不要输出任何思考过程、分析、标注）：\n\n{original}"
+        # 规则清洗（DeaiEngine.process）—— LLM 润色前先去 AI 痕迹
+        audit_summary = ""
+        deai_input = original
+        if deai_engine:
+            from deai.pipeline import deai_pass
+            deai_input, audit_summary = await deai_pass(deai_engine, original, seed=ch)
+            if audit_summary:
+                logger.info("    ch%03d deai: %s", ch, audit_summary.splitlines()[0])
+
+        user = f"以下是待润色的章节正文，请直接输出润色后的纯净草内容（不要输出任何思考过程、分析、标注）：\n\n{deai_input}"
         output = None
         for attempt in range(3):
             try:
@@ -312,6 +352,8 @@ async def run_deai(orch, name: str, total: int, proj_root: Path) -> bool:
                 cleaned = cleaned.replace("\n\n\n", "\n\n")
             (out_dir / f"chapter_{ch:03d}.md").write_text(cleaned + "\n", "utf-8")
             (out_dir / f"chapter_{ch:03d}.txt").write_text(cleaned + "\n", "utf-8")
+            if audit_summary:
+                (out_dir / f"chapter_{ch:03d}.audit.txt").write_text(audit_summary + "\n", "utf-8")
             ok += 1
         else:
             fail += 1
@@ -506,12 +548,21 @@ async def run_pipeline(
 
 
 def _print_status(task: dict, variants: list[str], base: Path) -> None:
-    """dry-run 状态预览。"""
+    """dry-run 状态预览（含汇总表）。"""
     total = task.get("total_chapters", 30)
     enabled = [s["name"] for s in task["stages"] if s.get("enabled", True)]
+    sw = max(len(s) for s in enabled) if enabled else 4
     print(f"\n{'='*70}")
     print(f"  📋 {task['display_name']}  — 状态预览")
     print(f"{'='*70}")
+    hdr = f"  {'Book':<16s}"
+    for s in enabled:
+        hdr += f"  {s:>{sw}s}"
+    hdr += f"  {'Chapters'}"
+    print(hdr)
+    print(f"  {'-'*16} {'-'*sw} {'-'*(len(enabled)*(sw+2)-sw-1)} {'-'*8}")
+
+    counts = {s: {"complete": 0, "in_progress": 0, "pending": 0, "failed": 0} for s in enabled}
     for vn in variants:
         vp = base / vn
         if not vp.exists():
@@ -522,6 +573,12 @@ def _print_status(task: dict, variants: list[str], base: Path) -> None:
         for s in enabled:
             st = stage_status(vp, s, total)
             icon = {"complete": "✅", "in_progress": "🔄", "pending": "⬜", "failed": "❌"}[st]
-            line += f"  {icon:>4s}"
+            line += f"  {icon:>{sw}s}"
+            counts[s][st] += 1
         line += f"  {ch_n:>3d}/{total}"
         print(line)
+
+    print(f"\n  ── 汇总 ──")
+    for s in enabled:
+        c = counts[s]
+        print(f"  {s:>{sw+2}s}: ✅{c['complete']}  🔄{c['in_progress']}  ⬜{c['pending']}  ❌{c['failed']}")

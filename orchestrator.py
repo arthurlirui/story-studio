@@ -24,11 +24,12 @@ from agents import (
     KnowledgeStore,
     WorkLog, BatchCoordinator,
     TopicResearcher, Innovator,
+    TrendingWords,
     get_search_provider,
 )
 from agents.llm_client import client as llm_client
 from agents.llm_client import LLM_ERROR_PREFIX
-from agents.text_cleaner import clean_chapter_body, strip_existing_title
+from agents.tools.text_cleaner import clean_chapter_body, strip_existing_title
 from orchestrator_state import (
     RunState,
     new_job_id,
@@ -37,6 +38,7 @@ from orchestrator_state import (
     PHASE_INNOVATE,
     PHASE_PLANNING,
     PHASE_BUILDING,
+    PHASE_TRENDING,
     PHASE_OUTLINING,
     PHASE_WRITING,
     PHASE_COMPLETE,
@@ -286,8 +288,32 @@ class StoryOrchestrator:
             self.client, model=self._agent_model("innovator", "main"),
             temperature=0.9, max_tokens=4096,
         )
+        # 热词研究员（trending 阶段：按时代检索网络热词并落盘，供热词注入查表）
+        self.trending_words = TrendingWords(
+            "热词研究员", "Trending Words", "按时代检索网络热词并指导场景应用",
+            self.client, model=self._agent_model("trending_words", "light"),
+            temperature=0.5, max_tokens=4096,
+        )
         self.agents["topic_researcher"] = self.topic_researcher
         self.agents["innovator"] = self.innovator
+        self.agents["trending_words"] = self.trending_words
+
+        # 去AI化引擎（懒加载；cfg.deai.enabled=False 时永远为 None）
+        self._deai_engine: Any = None
+
+    @property
+    def deai_engine(self):
+        """懒加载 DeaiEngine；disabled 返回 None。"""
+        if self._deai_engine is None and getattr(self.cfg, "deai", None) and self.cfg.deai.enabled:
+            from deai.engine import DeaiEngine
+            self._deai_engine = DeaiEngine(
+                llm_client=self.client,
+                aggressiveness=self.cfg.deai.aggressiveness,
+                length_band=(self.cfg.deai.length_min_ratio, self.cfg.deai.length_max_ratio),
+                prompt_version=self.cfg.deai.prompt_version,
+                audit_threshold=self.cfg.deai.audit_threshold,
+            )
+        return self._deai_engine
 
     # ── RunState 持久化 ────────────────────────────────────────
 
@@ -408,7 +434,7 @@ class StoryOrchestrator:
 
         t0 = time.time()
         # C4 修复：从 cfg 读 research_max_topics，默认 4
-        from agents.topic_researcher import DEFAULT_TOPICS
+        from agents.research.topic_researcher import DEFAULT_TOPICS
         max_topics = int(getattr(self.cfg, "research_max_topics", 4) or 4)
         if max_topics < len(DEFAULT_TOPICS):
             topics = DEFAULT_TOPICS[:max_topics]
@@ -587,6 +613,111 @@ class StoryOrchestrator:
         self._log("showrunner", review)
 
         return f"## 世界观\n{world_setting}\n\n## 角色\n{characters}\n\n## 评审\n{review}"
+
+    # ── Phase 2b: 热词研究 ─────────────────────────────────────
+
+    # 从 world/settings.md 解析时代背景的正则（匹配「时代背景：xxx」「时间：xxx」「年代：xxx」等）
+    _ERA_PATTERNS = (
+        re.compile(r"时代背景[:：]\s*([^\n，,。.]{2,40})"),
+        re.compile(r"^\*?\*?时间[:：]\s*([^\n，,。.]{2,40})"),
+        re.compile(r"^\*?\*?年代[:：]\s*([^\n，,。.]{2,40})"),
+        re.compile(r"^\*?\*?时代[:：]\s*([^\n，,。.]{2,40})"),
+    )
+
+    def _resolve_era(self) -> str:
+        """从 world/settings.md 解析时代背景；解析失败返回空字符串。
+
+        供 phase_trending_words 与写作注入共用：章节级 era 缺失时回退到这个整体时代。
+        """
+        settings = self.knowledge.load_world("settings")
+        if not settings:
+            return ""
+        for pat in self._ERA_PATTERNS:
+            m = pat.search(settings)
+            if m:
+                return m.group(1).strip()
+        return ""
+
+    async def phase_trending_words(self, era: str = "", brief: str = "") -> str:
+        """热词研究阶段: 按时代检索网络热词并落盘到 world/trending_words.md。
+
+        era 为空时从 world/settings.md 解析整体时代背景；仍解析失败则用 brief 让 LLM 推断。
+        幂等守卫：已有热词清单则跳过（断电恢复不重跑）。
+        """
+        existing = self.knowledge.load_world("trending_words")
+        if existing.strip():
+            logger.info("恢复：热词清单已存在，跳过 phase_trending_words")
+            self._set_phase(PHASE_TRENDING)
+            return existing
+
+        if not era:
+            era = self._resolve_era()
+        era_label = era or "当代"
+        self._set_phase(PHASE_TRENDING)
+        self._log("user", f"[trending] era={era_label} brief={brief[:80]}")
+        logger.info("phase_trending_words: 检索 %s 时代热词", era_label)
+
+        t0 = time.time()
+        try:
+            report = await self.trending_words.research(
+                era_label, self.web_search, self.knowledge, brief=brief,
+                on_usage=self._record_usage,
+            )
+        except Exception as e:
+            logger.exception("phase_trending_words 异常: %s", e)
+            await self.worklog.append(
+                phase=PHASE_TRENDING, agent=self.trending_words.name,
+                role="trending_words", action="research",
+                model=self.trending_words.model, error=str(e),
+                duration_ms=int((time.time() - t0) * 1000),
+            )
+            return f"## 热词检索失败\n\n{e}"
+
+        await self.worklog.append(
+            phase=PHASE_TRENDING, agent=self.trending_words.name,
+            role="trending_words", action="research",
+            model=self.trending_words.model,
+            excerpt=report[:200],
+            duration_ms=int((time.time() - t0) * 1000),
+        )
+        self._log("assistant", report)
+        return report
+
+    # 从本章大纲片段解析「时代」字段的正则
+    _CH_ERA_RE = re.compile(
+        r"\**\s*(?:时代|时间点|年代)\s*\**\s*[:：]\s*(?P<era>[^\n]{2,40})"
+    )
+
+    def _build_trending_prefix(self, chapter_outline: str) -> str:
+        """构造「时代流行语指南」注入段，供 scene_prompt 前置。
+
+        解析顺序：本章大纲 era → 整体时代（world/settings.md）→ 空。
+        era 或热词清单任一缺失则返回空串（静默降级，不影响写作流程）。
+        """
+        trending_doc = self.knowledge.load_world("trending_words")
+        if not trending_doc.strip():
+            return ""
+
+        era = ""
+        if chapter_outline:
+            m = self._CH_ERA_RE.search(chapter_outline)
+            if m:
+                era = m.group("era").strip()
+        if not era:
+            era = self._resolve_era()
+        era_label = era or "当代"
+
+        # 截取热词清单前 1500 字，避免 prompt 过长
+        snippet = trending_doc[:1500]
+        if len(trending_doc) > 1500:
+            snippet += "\n…（略）"
+
+        return (
+            f"## 时代流行语指南（{era_label}）\n"
+            f"以下是该时代代表性的网络热词与流行语，请在对话和场景描写中自然融入"
+            f"（符合角色身份与场景，不生硬堆砌，每章用 2-4 个即可）：\n"
+            f"{snippet}\n\n"
+        )
 
     # ── Phase 3: 大纲 ──────────────────────────────────────────
 
@@ -880,6 +1011,9 @@ class StoryOrchestrator:
                 brief_prefix += f"### 相邻章节简报\n{neighbor_briefs}\n"
             brief_prefix += "\n"
 
+        # 热词注入：从本章大纲解析 era（缺失则回退到整体时代），取该时代热词清单
+        trending_prefix = self._build_trending_prefix(chapter_outline)
+
         for round_n in range(max_rounds):
             # 断电恢复：跳过 checkpoint 之前已完成的轮次
             if round_n < resume_from_round:
@@ -888,7 +1022,7 @@ class StoryOrchestrator:
             if round_n == 0:
                 scene_prompt = (
                     f"请撰写第 {chapter_num} 章。\n\n"
-                    f"{brief_prefix}"
+                    f"{trending_prefix}{brief_prefix}"
                     f"## 大纲内容\n"
                 )
                 if chapter_outline:
@@ -901,7 +1035,7 @@ class StoryOrchestrator:
                     f"请根据评审意见重写本章。\n\n"
                     f"## 评审意见\n{review}\n\n"
                     f"## 上一稿\n{chapter_text}\n\n"
-                    f"{brief_prefix}"
+                    f"{trending_prefix}{brief_prefix}"
                     f"## 大纲内容\n{chapter_outline or '（根据上下文自然推进）'}"
                 )
 
@@ -1442,6 +1576,20 @@ class StoryOrchestrator:
                 self._log("showrunner", f"Final review (round {round_n}): {final_review[:200]}")
 
                 final_verdict = self._parse_review_verdict(final_review)
+
+                # 去AI化质量门：audit 评分低于阈值且非末轮时触发一轮规则清洗，
+                # 不改 verdict，让下一轮 showrunner 复审。PASS 也走 audit（记录用）
+                deai_engine = self.deai_engine
+                if deai_engine is not None:
+                    try:
+                        score, summary = await deai_engine.audit(full_text, final_edit)
+                        self._log("deai", summary)
+                        if score < self.cfg.deai.audit_threshold and round_n < max_rounds - 1:
+                            final_edit, _ = await deai_engine.process(final_edit)
+                            self._log("deai", f"audit {score} < {self.cfg.deai.audit_threshold}，已触发规则清洗")
+                    except Exception:
+                        logger.exception("deai audit 异常，跳过")
+
                 if final_verdict == "PASS":
                     break
                 # 非 PASS：若有下一轮，把评审意见带入下一轮 editor 的输入

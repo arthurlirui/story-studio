@@ -29,8 +29,9 @@ import {
   setApiKey,
   getStoredApiKey,
   checkHealth,
+  getConfigPaths,
 } from "@/lib/api-client";
-import type { StudioSettings, ConfigUpdateResult } from "@/lib/types";
+import type { StudioSettings, ConfigUpdateResult, ConfigPaths } from "@/lib/types";
 
 /** 智能体角色清单（与 orchestrator.py 实例化的 role 一致） */
 const AGENT_ROLES: { role: string; label: string; tier: "main" | "light" }[] = [
@@ -47,6 +48,7 @@ const AGENT_ROLES: { role: string; label: string; tier: "main" | "light" }[] = [
   { role: "hooker", label: "Hooker（悬念钩子）", tier: "light" },
   { role: "climax_designer", label: "Climax Designer（高潮设计）", tier: "light" },
   { role: "topic_researcher", label: "Topic Researcher（主题调研）", tier: "light" },
+  { role: "trending_words", label: "Trending Words（热词研究）", tier: "light" },
 ];
 
 /** 默认配置（加载失败或首次进入时用） */
@@ -68,7 +70,17 @@ const DEFAULT_SETTINGS: StudioSettings = {
   web_search_endpoint: "",
   research_enabled: true,
   research_max_topics: 4,
+  trending_enabled: true,
   multi_polish: { enabled: true, max_concurrent: 3, models: [] },
+  deai: {
+    enabled: true,
+    aggressiveness: 0.4,
+    length_min_ratio: 0.90,
+    length_max_ratio: 1.15,
+    polish_max_attempts: 4,
+    prompt_version: "v1",
+    audit_threshold: 35,
+  },
   agent_models: {},
   api_key: "",
   knowledge_dir: "",
@@ -92,18 +104,34 @@ export default function SettingsPage() {
   // 后端连接检测
   const [healthStatus, setHealthStatus] = useState<string | null>(null);
 
+  // 配置文件 / jobs 目录路径（来自 GET /config/paths，只读展示）
+  const [configPaths, setConfigPaths] = useState<ConfigPaths | null>(null);
+
   useEffect(() => {
     void loadSettings();
+    void loadConfigPaths();
   }, []);
+
+  async function loadConfigPaths() {
+    try {
+      setConfigPaths(await getConfigPaths());
+    } catch {
+      // 路径信息非关键，加载失败时静默回退到默认显示
+      setConfigPaths(null);
+    }
+  }
 
   async function loadSettings() {
     setLoading(true);
     setLoadError(null);
     try {
       const cfg = await getConfig();
-      // 防御：后端 settings.yaml 可能没有 multi_polish 字段
+      // 防御：后端 settings.yaml 可能没有 multi_polish / deai 字段
       if (!cfg.multi_polish) {
         cfg.multi_polish = { enabled: true, max_concurrent: 3, models: [] };
+      }
+      if (!cfg.deai) {
+        cfg.deai = { ...DEFAULT_SETTINGS.deai };
       }
       if (!cfg.agent_models) {
         cfg.agent_models = {};
@@ -137,7 +165,7 @@ export default function SettingsPage() {
       "max_rounds", "scene_writers", "batch_size", "max_context_chars",
       "merge_gate_rounds", "rate_limit_delay",
       "web_search_provider", "web_search_endpoint",
-      "research_enabled", "research_max_topics",
+      "research_enabled", "research_max_topics", "trending_enabled",
     ];
     for (const k of keys) {
       if (settings[k] !== savedSettings[k]) {
@@ -155,6 +183,10 @@ export default function SettingsPage() {
         max_concurrent: settings.multi_polish.max_concurrent,
         models: settings.multi_polish.models,
       };
+    }
+    // deai：任一子字段变化则整体提交
+    if (JSON.stringify(settings.deai) !== JSON.stringify(savedSettings.deai)) {
+      patch.deai = settings.deai;
     }
     // agent_models：全量提交
     if (JSON.stringify(settings.agent_models) !== JSON.stringify(savedSettings.agent_models)) {
@@ -413,6 +445,17 @@ export default function SettingsPage() {
                   onCheckedChange={(v) => updateField("research_enabled", v)}
                 />
               </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="trending_enabled">启用热词研究</Label>
+                  <p className="text-xs text-muted-foreground">按时代检索网络热词并在场景写作中注入</p>
+                </div>
+                <Switch
+                  id="trending_enabled"
+                  checked={settings.trending_enabled}
+                  onCheckedChange={(v) => updateField("trending_enabled", v)}
+                />
+              </div>
               <div className="space-y-2">
                 <Label>搜索引擎</Label>
                 <Select
@@ -504,6 +547,95 @@ export default function SettingsPage() {
               )}
             </CardContent>
           </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">去AI化引擎</CardTitle>
+              <CardDescription>规则清洗 + LLM 重写以去除 AI 文风痕迹，终审 audit 低于阈值触发重写</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="deai_enabled">启用去AI化</Label>
+                  <p className="text-xs text-muted-foreground">关闭则 deai 阶段仅做普通润色，跳过规则清洗</p>
+                </div>
+                <Switch
+                  id="deai_enabled"
+                  checked={settings.deai.enabled}
+                  onCheckedChange={(v) =>
+                    setSettings((s) => ({ ...s, deai: { ...s.deai, enabled: v } }))
+                  }
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="deai_aggr">重写激进度</Label>
+                  <Input
+                    id="deai_aggr" type="number" min={0} max={1} step={0.05}
+                    value={settings.deai.aggressiveness}
+                    onChange={(e) =>
+                      setSettings((s) => ({ ...s, deai: { ...s.deai, aggressiveness: parseFloat(e.target.value) || 0 } }))
+                    }
+                  />
+                  <p className="text-xs text-muted-foreground">0.0-1.0，越高越激进（同义词变异/段落碎片化触发率）</p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="deai_audit">终审 audit 阈值</Label>
+                  <Input
+                    id="deai_audit" type="number" min={0} max={50}
+                    value={settings.deai.audit_threshold}
+                    onChange={(e) =>
+                      setSettings((s) => ({ ...s, deai: { ...s.deai, audit_threshold: parseInt(e.target.value) || 0 } }))
+                    }
+                  />
+                  <p className="text-xs text-muted-foreground">低于此分（0-50）触发一轮 engine.process() 重写</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="deai_min">字数下限比</Label>
+                  <Input
+                    id="deai_min" type="number" min={0.5} max={1.5} step={0.05}
+                    value={settings.deai.length_min_ratio}
+                    onChange={(e) =>
+                      setSettings((s) => ({ ...s, deai: { ...s.deai, length_min_ratio: parseFloat(e.target.value) || 0 } }))
+                    }
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="deai_max">字数上限比</Label>
+                  <Input
+                    id="deai_max" type="number" min={0.5} max={2} step={0.05}
+                    value={settings.deai.length_max_ratio}
+                    onChange={(e) =>
+                      setSettings((s) => ({ ...s, deai: { ...s.deai, length_max_ratio: parseFloat(e.target.value) || 0 } }))
+                    }
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="deai_attempts">重试上限</Label>
+                  <Input
+                    id="deai_attempts" type="number" min={1} max={10}
+                    value={settings.deai.polish_max_attempts}
+                    onChange={(e) =>
+                      setSettings((s) => ({ ...s, deai: { ...s.deai, polish_max_attempts: parseInt(e.target.value) || 1 } }))
+                    }
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="deai_prompt">重写提示词版本</Label>
+                <Input
+                  id="deai_prompt"
+                  value={settings.deai.prompt_version}
+                  onChange={(e) =>
+                    setSettings((s) => ({ ...s, deai: { ...s.deai, prompt_version: e.target.value } }))
+                  }
+                  placeholder="对应 deai/prompts/rewrite_{version}.txt"
+                />
+              </div>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* ── Tab 4: 智能体模型路由 ── */}
@@ -544,7 +676,11 @@ export default function SettingsPage() {
         <CardContent className="pt-6 space-y-2 text-sm">
           <div className="flex justify-between">
             <span className="text-muted-foreground">配置文件路径</span>
-            <code className="text-xs">{settings.knowledge_dir ? "config/settings.yaml" : "config/settings.yaml"}</code>
+            <code className="text-xs">{configPaths?.config_file || "config/settings.yaml"}</code>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Jobs 目录</span>
+            <code className="text-xs">{configPaths?.jobs_dir || "jobs"}</code>
           </div>
           <div className="flex justify-between">
             <span className="text-muted-foreground">知识库目录</span>

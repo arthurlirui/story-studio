@@ -140,6 +140,37 @@ def test_parse_missing_fields_defaults():
     assert ch.word_estimate == 2500
 
 
+def test_parse_era_field():
+    """时代/时间点/年代 三种标签都应解析到 ChapterOutline.era。"""
+    md = """\
+## 第1章：穿越
+
+*   **核心事件**：主角穿越到 2010 年
+*   **出场角色**：主角
+*   **章节悬念/钩子**：手机没信号
+*   **字数预估**：2500字
+*   **时代**：2010年代
+"""
+    doc = parse_outline(md)
+    ch = doc.chapters[0]
+    assert ch.era == "2010年代"
+
+
+def test_parse_era_aliases():
+    """「时间点」「年代」标签也应归一化到 era 字段。"""
+    for label in ("时间点", "年代"):
+        md = f"## 第1章：测试\n\n*   **{label}**：唐朝\n"
+        doc = parse_outline(md)
+        assert doc.chapters[0].era == "唐朝"
+
+
+def test_parse_era_default_empty():
+    """没有时代字段的旧大纲 era 应为空字符串（兼容性）。"""
+    md = "## 第1章：无时代\n\n*   **字数预估**：2000字\n"
+    doc = parse_outline(md)
+    assert doc.chapters[0].era == ""
+
+
 def test_parse_no_chapters_all_preamble():
     doc = parse_outline("这是一段普通文本，没有章节结构。\n\n第二段。")
     assert doc.chapters == []
@@ -176,6 +207,29 @@ def test_render_skips_empty_fields():
     assert doc2.chapters[0].events == []
     assert doc2.chapters[0].characters == []
     assert doc2.chapters[0].word_estimate == 2500
+
+
+def test_render_skips_empty_era():
+    """era 为空时不应渲染时代行（保持与旧大纲的兼容性）。"""
+    doc = OutlineDoc(chapters=[ChapterOutline(num=1, title="无时代章")])
+    md = render_outline(doc)
+    assert "**时代**" not in md
+
+
+def test_roundtrip_era():
+    """带 era 的章节 parse → render → parse 应保持一致。"""
+    md = """\
+## 第1章：穿越
+
+*   **核心事件**：主角穿越
+*   **出场角色**：主角
+*   **章节悬念/钩子**：手机没信号
+*   **字数预估**：2500字
+*   **时代**：2010年代
+"""
+    doc = parse_outline(md)
+    assert doc.chapters[0].era == "2010年代"
+    assert parse_outline(render_outline(doc)) == doc
 
 
 # ── 与下游解析器的兼容性锁定 ─────────────────────────────────

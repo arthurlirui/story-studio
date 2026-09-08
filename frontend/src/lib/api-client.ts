@@ -42,7 +42,7 @@ async function request<T>(
 
 // ── Novels / Jobs ──────────────────────────────────────────
 
-import type { Job, NovelCreate, ChapterContent, TaskPlan, CostSummary, QualityData, Chapter, OutlineDoc, OutlineSaveResult, StudioSettings, ConfigUpdateResult } from "./types";
+import type { Job, NovelCreate, ChapterContent, TaskPlan, CostSummary, QualityData, Chapter, OutlineDoc, OutlineSaveResult, StudioSettings, ConfigUpdateResult, ConfigPaths } from "./types";
 
 export async function listNovels(): Promise<{ novels: Job[] }> {
   return request("/novels");
@@ -185,4 +185,8 @@ export async function setConfig(patch: Partial<StudioSettings>): Promise<ConfigU
     method: "PUT",
     body: JSON.stringify(patch),
   });
+}
+
+export async function getConfigPaths(): Promise<ConfigPaths> {
+  return request("/config/paths");
 }

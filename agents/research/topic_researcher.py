@@ -17,7 +17,7 @@ from typing import Any
 
 from agents.base import Agent
 from agents.knowledge import KnowledgeStore
-from agents.web_search import WebSearchProvider
+from agents.tools.web_search import WebSearchProvider
 
 logger = logging.getLogger(__name__)
 

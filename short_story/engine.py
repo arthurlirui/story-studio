@@ -98,12 +98,24 @@ class ShortStoryPipeline:
     _POLISH_TMPL: str | None = None  # 类级别缓存 polish_prompt.txt
 
     def __init__(self, llm_client, skill_store: SkillConfigStore,
-                 knowledge_dir: Path, output_dir: Path):
+                 knowledge_dir: Path, output_dir: Path, cfg=None):
         self.llm = llm_client; self.skills = skill_store
         self.knowledge_dir = Path(knowledge_dir)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.checker = QualityChecker()
+        # 字数合规区间：优先从 cfg.deai 读，回退类常量默认值
+        deai_cfg = getattr(cfg, "deai", None)
+        self.target_min_ratio = getattr(deai_cfg, "length_min_ratio", self.TARGET_MIN_RATIO)
+        self.target_max_ratio = getattr(deai_cfg, "length_max_ratio", self.TARGET_MAX_RATIO)
+        # ACCEPT 带在 TARGET 基础上外扩 10%（保持原 0.80/1.30 比例关系）
+        self.accept_min_ratio = max(0.5, self.target_min_ratio - 0.10)
+        self.accept_max_ratio = self.target_max_ratio + 0.15
+        # 润色重试次数：优先从 cfg.deai 读
+        self.polish_max_attempts = getattr(deai_cfg, "polish_max_attempts", self.POLISH_MAX_ATTEMPTS)
+        # DeaiEngine（cfg.deai.enabled=False 时为 None）
+        from deai.pipeline import make_engine_from_cfg
+        self.deai_engine = make_engine_from_cfg(cfg, llm_client) if cfg is not None else None
 
     @staticmethod
     def _get_polish_template() -> str:
@@ -353,10 +365,10 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
         """
         original = so.text
         orig_n = self._body_len(original)
-        target_min = max(1, round(orig_n * self.TARGET_MIN_RATIO))
-        target_max = round(orig_n * self.TARGET_MAX_RATIO)
-        accept_min = max(1, round(orig_n * self.ACCEPT_MIN_RATIO))
-        accept_max = round(orig_n * self.ACCEPT_MAX_RATIO)
+        target_min = max(1, round(orig_n * self.target_min_ratio))
+        target_max = round(orig_n * self.target_max_ratio)
+        accept_min = max(1, round(orig_n * self.accept_min_ratio))
+        accept_max = round(orig_n * self.accept_max_ratio)
 
         base_user = (
             polish_tmpl.replace("{section}", original)
@@ -367,7 +379,7 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
         best: tuple[int, str] | None = None  # (body_len, body) 最接近原文的越界候选
         last_err: str | None = None
 
-        for attempt in range(self.POLISH_MAX_ATTEMPTS):
+        for attempt in range(self.polish_max_attempts):
             user = base_user
             if attempt > 0 and best is not None:
                 # 上一轮字数越界，追加硬约束驱动模型收敛
@@ -401,7 +413,7 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
                 logger.warning(
                     "    第%d章 字数越界: %d字(原文%d, 放行带%d-%d), 重试 %d/%d",
                     so.section, n, orig_n, accept_min, accept_max,
-                    attempt + 1, self.POLISH_MAX_ATTEMPTS,
+                    attempt + 1, self.polish_max_attempts,
                 )
                 last_err = f"字数越界({n}字, 放行带{accept_min}-{accept_max})"
             except Exception as e:
@@ -449,6 +461,10 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
             "精通历史、悬疑、玄幻、言情、军事、医疗等专业题材。"
         )
 
+        if self.deai_engine:
+            logger.info("  DeaiEngine 已启用 (aggr=%.2f, prompt=%s)",
+                        self.deai_engine.aggr, self.deai_engine.prompt_version)
+
         polished_sections = []
         full_parts = [f"# {plan.title}\n\n> {plan.synopsis}\n"]
         ok = fail = 0
@@ -464,8 +480,19 @@ JSON格式：{{"title":"书名","synopsis":"100字简介",
                 full_parts.append("")
                 continue
 
+            # 规则清洗（DeaiEngine.process）—— LLM 润色前先去 AI 痕迹
+            deai_input = original
+            polish_so = so  # 传给 _polish_section 的 section（可能为清洗版）
+            if self.deai_engine:
+                from deai.pipeline import deai_pass
+                deai_input, audit_summary = await deai_pass(self.deai_engine, original, seed=so.section)
+                if audit_summary:
+                    logger.info("  第%d章 deai: %s", so.section, audit_summary.splitlines()[0])
+                # 用清洗后的文本替换 section 原文，供 _polish_section 润色
+                polish_so = SectionOutput(section=so.section, title=so.title, text=deai_input)
+
             logger.info("  第%d章 (%d字)...", so.section, orig_n)
-            body, last_err, verdict = await self._polish_section(so, polish_tmpl, SYSTEM)
+            body, last_err, verdict = await self._polish_section(polish_so, polish_tmpl, SYSTEM)
 
             if body is not None:
                 final_text = f"{self._chapter_title_line(so)}\n\n{body}".rstrip()

@@ -169,7 +169,7 @@ async def run_short_task(
         default_model=cfg.main_model,
     )
     skills = SkillConfigStore(skill_dir)
-    pipe = ShortStoryPipeline(client, skills, proj_root / "short_story" / "knowledge", out_dir)
+    pipe = ShortStoryPipeline(client, skills, proj_root / "short_story" / "knowledge", out_dir, cfg=cfg)
 
     progress = TaskProgress.load(out_dir)
     completed = set(progress.get("completed_stages", []))

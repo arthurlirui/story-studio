@@ -17,7 +17,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from agents.style_polisher import StylePolisher, STYLE_REGISTRY, list_styles
+from agents.tools.style_polisher import StylePolisher, STYLE_REGISTRY, list_styles
 from agents.local_inference_client import LocalInferenceClient
 
 logging.basicConfig(

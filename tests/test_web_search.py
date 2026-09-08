@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agents.web_search import (
+from agents.tools.web_search import (
     BochaSearchProvider, DoubaoSearchProvider, MockSearchProvider,
     SearchResult, WebSearchProvider, get_search_provider,
 )

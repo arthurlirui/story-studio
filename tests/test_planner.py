@@ -17,7 +17,7 @@ from planner import (
 )
 from orchestrator_state import (
     PHASE_BUILDING, PHASE_COMPLETE, PHASE_INNOVATE, PHASE_OUTLINING,
-    PHASE_PLANNING, PHASE_RESEARCH, PHASE_WRITING,
+    PHASE_PLANNING, PHASE_RESEARCH, PHASE_TRENDING, PHASE_WRITING,
 )
 
 
@@ -118,6 +118,7 @@ def _make_mock_orchestrator() -> MagicMock:
     orch.phase_innovate = AsyncMethodTracker("创新亮点清单")
     orch.phase_planning = AsyncMethodTracker("企划完成")
     orch.phase_building = AsyncMethodTracker("设定完成")
+    orch.phase_trending_words = AsyncMethodTracker("热词清单")
     orch.phase_outlining = AsyncMethodTracker("大纲完成")
     orch.phase_writing = AsyncMethodTracker("章节完成")
     orch.phase_writing_batch = AsyncMethodTracker("批次完成")
@@ -195,11 +196,11 @@ class TestTaskPlan:
 class TestBuildPlan:
     def test_generates_7_tasks(self, planner: TaskPlanner):
         plan = planner.build_plan(brief="测试", total_chapters=10)
-        assert len(plan.tasks) == 7
+        assert len(plan.tasks) == 8
         phases = [t.phase for t in plan.tasks]
         assert phases == [
             PHASE_RESEARCH, PHASE_INNOVATE, PHASE_PLANNING,
-            PHASE_BUILDING, PHASE_OUTLINING, PHASE_WRITING, PHASE_COMPLETE,
+            PHASE_BUILDING, PHASE_TRENDING, PHASE_OUTLINING, PHASE_WRITING, PHASE_COMPLETE,
         ]
 
     def test_all_pending_initially(self, planner: TaskPlanner):
@@ -217,13 +218,22 @@ class TestBuildPlan:
         others = [t for t in plan.tasks if t.phase not in (PHASE_RESEARCH, PHASE_INNOVATE)]
         assert all(t.status == TASK_PENDING for t in others)
 
+    def test_trending_disabled_marks_skipped(self, planner: TaskPlanner):
+        planner.cfg.trending_enabled = False
+        plan = planner.build_plan(brief="测试", total_chapters=5)
+        trending_task = next(t for t in plan.tasks if t.phase == PHASE_TRENDING)
+        assert trending_task.status == TASK_SKIPPED
+        # 其他任务仍 pending
+        others = [t for t in plan.tasks if t.phase != PHASE_TRENDING]
+        assert all(t.status == TASK_PENDING for t in others)
+
     def test_saves_to_disk(self, planner: TaskPlanner):
         plan = planner.build_plan(brief="测试", total_chapters=5)
         assert planner.plan_path.exists()
         # 加载应一致
         loaded = TaskPlan.load(planner.plan_path)
         assert loaded is not None
-        assert len(loaded.tasks) == 7
+        assert len(loaded.tasks) == 8
 
     def test_invalid_write_mode_falls_back(self, planner: TaskPlanner):
         plan = planner.build_plan(brief="测试", total_chapters=5, write_mode="invalid")
@@ -280,10 +290,10 @@ class TestQuery:
         planner.plan.tasks[0].status = TASK_DONE
         planner.plan.tasks[1].status = TASK_FAILED
         s = planner.summary()
-        assert s["total"] == 7
+        assert s["total"] == 8
         assert s["done"] == 1
         assert s["failed"] == 1
-        assert s["pending"] == 5
+        assert s["pending"] == 6
 
 
 # ── 状态变更 ──────────────────────────────────────────────────
@@ -342,9 +352,18 @@ class TestRunTask:
         _run(planner.run_task(task))
         mock_orchestrator.phase_planning.assert_awaited_once_with("测试 brief")
 
+    def test_dispatch_trending(self, planner: TaskPlanner, mock_orchestrator):
+        planner.build_plan(brief="测试 brief", total_chapters=5)
+        task = planner.plan.tasks[4]  # trending
+        _run(planner.run_task(task))
+        mock_orchestrator.phase_trending_words.assert_awaited_once()
+        # brief 应透传给 phase_trending_words
+        call_kwargs = mock_orchestrator.phase_trending_words.await_args.kwargs
+        assert call_kwargs.get("brief") == "测试 brief"
+
     def test_dispatch_outlining_passes_total(self, planner: TaskPlanner, mock_orchestrator):
         planner.build_plan(brief="测试", total_chapters=7)
-        task = planner.plan.tasks[4]  # outlining
+        task = planner.plan.tasks[5]  # outlining
         _run(planner.run_task(task))
         mock_orchestrator.phase_outlining.assert_awaited_once()
         call_kwargs = mock_orchestrator.phase_outlining.await_args.kwargs
@@ -352,7 +371,7 @@ class TestRunTask:
 
     def test_dispatch_writing_sequential(self, planner: TaskPlanner, mock_orchestrator):
         planner.build_plan(brief="测试", total_chapters=3, write_mode="sequential")
-        task = planner.plan.tasks[5]  # writing
+        task = planner.plan.tasks[6]  # writing
         _run(planner.run_task(task))
         assert mock_orchestrator.phase_writing.await_count == 3
         mock_orchestrator.phase_writing_batch.assert_not_awaited()
@@ -360,7 +379,7 @@ class TestRunTask:
     def test_dispatch_writing_batch(self, planner: TaskPlanner, mock_orchestrator):
         planner.build_plan(brief="测试", total_chapters=5, write_mode="batch")
         planner.cfg.batch_size = 2
-        task = planner.plan.tasks[5]  # writing
+        task = planner.plan.tasks[6]  # writing
         _run(planner.run_task(task))
         # 5 章按 batch_size=2 应该跑 3 批 (2+2+1)
         assert mock_orchestrator.phase_writing_batch.await_count == 3
@@ -390,11 +409,11 @@ class TestRunAll:
 
         _run(planner.run_all(on_progress=on_progress))
 
-        # 所有 7 任务都应被回调
-        assert len(progress_log) == 7
-        # 第一个任务 id=1，最后一个 id=7
+        # 所有 8 任务都应被回调
+        assert len(progress_log) == 8
+        # 第一个任务 id=1，最后一个 id=8
         assert progress_log[0][0] == 1
-        assert progress_log[-1][0] == 7
+        assert progress_log[-1][0] == 8
         # 所有任务都 done
         assert all(t.status == TASK_DONE for t in planner.plan.tasks)
         # 每个方法都被调用
@@ -402,6 +421,7 @@ class TestRunAll:
         mock_orchestrator.phase_innovate.assert_awaited_once()
         mock_orchestrator.phase_planning.assert_awaited_once()
         mock_orchestrator.phase_building.assert_awaited_once()
+        mock_orchestrator.phase_trending_words.assert_awaited_once()
         mock_orchestrator.phase_outlining.assert_awaited_once()
         mock_orchestrator.phase_complete.assert_awaited_once()
 
@@ -415,9 +435,10 @@ class TestRunAll:
         assert planner.plan.tasks[2].status == TASK_DONE  # planning
         # building 失败
         assert planner.plan.tasks[3].status == TASK_FAILED
-        # outlining/writing/complete 未被触达
-        assert planner.plan.tasks[4].status == TASK_PENDING
-        assert planner.plan.tasks[5].status == TASK_PENDING
+        # trending/outlining/writing/complete 未被触达
+        assert planner.plan.tasks[4].status == TASK_PENDING  # trending
+        assert planner.plan.tasks[5].status == TASK_PENDING  # outlining
+        mock_orchestrator.phase_trending_words.assert_not_awaited()
         mock_orchestrator.phase_outlining.assert_not_awaited()
 
     def test_continues_on_failure_when_configured(
@@ -429,22 +450,25 @@ class TestRunAll:
         # building 失败后仍会推进到下一个 pending 任务）
         mock_orchestrator.phase_building.side_effect = RuntimeError("build 失败")
         # 后续 phase 也跟着失败（无 world 产物）
+        mock_orchestrator.phase_trending_words.side_effect = RuntimeError("no world")
         mock_orchestrator.phase_outlining.side_effect = RuntimeError("no world")
         mock_orchestrator.phase_writing.side_effect = RuntimeError("no outline")
         mock_orchestrator.phase_complete.side_effect = RuntimeError("no chapters")
         _run(planner.run_all(stop_on_failure=False))
         # 每个任务都应被触达（不再被 building 失败阻塞）
         mock_orchestrator.phase_building.assert_awaited_once()
+        mock_orchestrator.phase_trending_words.assert_awaited_once()
         mock_orchestrator.phase_outlining.assert_awaited_once()
         mock_orchestrator.phase_complete.assert_awaited_once()
-        # research/innovate/planning 成功，building/outlining/writing/complete 失败
+        # research/innovate/planning 成功，building/trending/outlining/writing/complete 失败
         assert planner.plan.tasks[0].status == TASK_DONE  # research
         assert planner.plan.tasks[1].status == TASK_DONE  # innovate
         assert planner.plan.tasks[2].status == TASK_DONE  # planning
         assert planner.plan.tasks[3].status == TASK_FAILED  # building
-        assert planner.plan.tasks[4].status == TASK_FAILED  # outlining
-        assert planner.plan.tasks[5].status == TASK_FAILED  # writing
-        assert planner.plan.tasks[6].status == TASK_FAILED  # complete
+        assert planner.plan.tasks[4].status == TASK_FAILED  # trending
+        assert planner.plan.tasks[5].status == TASK_FAILED  # outlining
+        assert planner.plan.tasks[6].status == TASK_FAILED  # writing
+        assert planner.plan.tasks[7].status == TASK_FAILED  # complete
 
     def test_resumes_from_existing_plan(
         self, planner: TaskPlanner, mock_orchestrator, tmp_path: Path,

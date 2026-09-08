@@ -28,7 +28,7 @@ from typing import Any, Callable
 from config import StudioConfig
 from orchestrator_state import (
     PHASE_RESEARCH, PHASE_INNOVATE,
-    PHASE_PLANNING, PHASE_BUILDING, PHASE_OUTLINING,
+    PHASE_PLANNING, PHASE_BUILDING, PHASE_TRENDING, PHASE_OUTLINING,
     PHASE_WRITING, PHASE_COMPLETE,
 )
 
@@ -130,6 +130,7 @@ _DEFAULT_TASK_DEFS = [
     ("创新亮点", PHASE_INNOVATE),
     ("策划", PHASE_PLANNING),
     ("建立", PHASE_BUILDING),
+    ("热词", PHASE_TRENDING),
     ("大纲", PHASE_OUTLINING),
     ("写作", PHASE_WRITING),
     ("完稿", PHASE_COMPLETE),
@@ -175,6 +176,8 @@ class TaskPlanner:
         for i, (name, phase) in enumerate(_DEFAULT_TASK_DEFS, start=1):
             task = Task(id=i, name=name, phase=phase)
             if not self.cfg.research_enabled and phase in (PHASE_RESEARCH, PHASE_INNOVATE):
+                task.status = TASK_SKIPPED
+            if not getattr(self.cfg, "trending_enabled", True) and phase == PHASE_TRENDING:
                 task.status = TASK_SKIPPED
             tasks.append(task)
 
@@ -308,6 +311,8 @@ class TaskPlanner:
             return await self.orch.phase_planning(brief)
         if phase == PHASE_BUILDING:
             return await self.orch.phase_building()
+        if phase == PHASE_TRENDING:
+            return await self.orch.phase_trending_words(brief=brief)
         if phase == PHASE_OUTLINING:
             # H1 修复：plan.total_chapters=0（用户未指定）时传 None，
             # 让 orchestrator 从 outline 解析「建议章节数」

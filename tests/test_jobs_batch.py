@@ -24,6 +24,8 @@ def _cfg(tmp_path: Path) -> StudioConfig:
         light_model="test-light",
         batch_size=2,
         max_rounds=1,
+        research_enabled=False,
+        trending_enabled=False,
     )
 
 
@@ -47,6 +49,7 @@ def fake_run_pipeline(monkeypatch):
     from orchestrator import StoryOrchestrator
     monkeypatch.setattr(StoryOrchestrator, "phase_planning", _noop)
     monkeypatch.setattr(StoryOrchestrator, "phase_building", _noop)
+    monkeypatch.setattr(StoryOrchestrator, "phase_trending_words", _noop)
     monkeypatch.setattr(StoryOrchestrator, "phase_outlining", _noop)
     monkeypatch.setattr(StoryOrchestrator, "phase_writing", _phase_writing)
     monkeypatch.setattr(StoryOrchestrator, "phase_writing_batch", _phase_writing_batch)

@@ -90,6 +90,7 @@ def fake_phases(monkeypatch):
     monkeypatch.setattr(StoryOrchestrator, "phase_innovate", _phase_innovate)
     monkeypatch.setattr(StoryOrchestrator, "phase_planning", _noop)
     monkeypatch.setattr(StoryOrchestrator, "phase_building", _noop)
+    monkeypatch.setattr(StoryOrchestrator, "phase_trending_words", _noop)
     monkeypatch.setattr(StoryOrchestrator, "phase_outlining", _phase_outlining)
     monkeypatch.setattr(StoryOrchestrator, "phase_writing", _phase_writing)
     monkeypatch.setattr(StoryOrchestrator, "phase_writing_batch", _noop)

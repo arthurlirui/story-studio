@@ -61,12 +61,15 @@ def test_deai_rewrite_llm_rejects_error_sentinel():
 
 
 def test_deai_rewrite_llm_applies_real_response():
-    """正常响应仍然生效（防止修复过度，把正常文本也拦截）。"""
+    """正常响应仍然生效（防止修复过度，把正常文本也拦截）。
+
+    新协议：LLM 需以 [N] 锚号前缀输出对应段落，引擎按锚号回填。
+    """
     from deai.engine import DeaiEngine, ScanResult
 
     class _OKLLM:
         async def think(self, prompt: str) -> str:
-            return "他眼神很沉，像是活了很久。"
+            return "[1] 他眼神很沉，像是活了很久。"
 
     engine = DeaiEngine(llm_client=_OKLLM())
     sample = "他的眼神无比深邃，仿佛承载着千年的沧桑与重担。"

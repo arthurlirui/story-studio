@@ -45,6 +45,26 @@ class MultiPolishConfig:
 
 
 @dataclass
+class DeaiConfig:
+    """去AI化引擎配置。
+
+    对应 deai/engine.py 的 DeaiEngine 参数 + 终审质量门阈值。
+    - aggressiveness: 0.0-1.0，控制规则重写的激进程度（同义词变异/段落碎片化/长句拆分触发概率）
+    - length_min/max_ratio: 润色前后字数合规区间（润色后字数 / 原文字数），
+      超出区间触发重试或截断。对应短篇 pipeline 的 TARGET/ACCEPT 比例。
+    - prompt_version: DeaiEngine LLM 重写提示词版本，对应 deai/prompts/rewrite_{version}.txt
+    - audit_threshold: 终审 audit 评分低于此值触发一轮 engine.process() 重写（0-50 分制）
+    """
+    enabled: bool = True
+    aggressiveness: float = 0.4
+    length_min_ratio: float = 0.90
+    length_max_ratio: float = 1.15
+    polish_max_attempts: int = 4
+    prompt_version: str = "v1"
+    audit_threshold: int = 35
+
+
+@dataclass
 class StudioConfig:
     # Backend selection
     backend: str = "llm"  # "llm" or "ollama"
@@ -66,6 +86,7 @@ class StudioConfig:
     web_search_endpoint: str = ""  # 留空用 provider 默认 endpoint
     research_enabled: bool = True  # 关闭则跳过 research/innovate 任务
     research_max_topics: int = 4  # 检索主题数（热点/重要事件/同类小说/创作手法）
+    trending_enabled: bool = True  # 关闭则跳过 trending（热词研究）任务
     # REST API 鉴权：留空则不启用鉴权（仅适合本地/内网）；
     # 设置后所有 /novels* 端点要求请求头 X-API-Key 匹配该值。/health 始终开放。
     api_key: str = ""
@@ -76,6 +97,8 @@ class StudioConfig:
     agent_models: dict[str, str] = field(default_factory=dict)
     # 多模型润色配置
     multi_polish: MultiPolishConfig = field(default_factory=MultiPolishConfig)
+    # 去AI化引擎配置
+    deai: DeaiConfig = field(default_factory=DeaiConfig)
     max_rounds: int = 3  # 每章自动修订上限（REVISE/REJECT 回灌重写的最大轮数）
     scene_writers: int = 3  # 并行写作的编剧数量
     max_context_chars: int = 60000  # build_context 总字符预算，超出按章节号倒序裁剪最旧摘要
@@ -161,6 +184,19 @@ def load_config(config_dir: str | Path = "", *, create_dirs: bool = True) -> Stu
                 max_concurrent=mp_data.get("max_concurrent", 3),
             )
 
+        # 去AI化引擎配置
+        deai_data = data.get("deai", {})
+        if deai_data:
+            cfg.deai = DeaiConfig(
+                enabled=deai_data.get("enabled", True),
+                aggressiveness=float(deai_data.get("aggressiveness", 0.4)),
+                length_min_ratio=float(deai_data.get("length_min_ratio", 0.90)),
+                length_max_ratio=float(deai_data.get("length_max_ratio", 1.15)),
+                polish_max_attempts=int(deai_data.get("polish_max_attempts", 4)),
+                prompt_version=deai_data.get("prompt_version", "v1"),
+                audit_threshold=int(deai_data.get("audit_threshold", 35)),
+            )
+
         cfg.max_context_chars = data.get("max_context_chars", cfg.max_context_chars)
         cfg.batch_size = data.get("batch_size", cfg.batch_size)
         cfg.merge_gate_rounds = data.get("merge_gate_rounds", cfg.merge_gate_rounds)
@@ -169,6 +205,7 @@ def load_config(config_dir: str | Path = "", *, create_dirs: bool = True) -> Stu
         cfg.web_search_endpoint = data.get("web_search_endpoint", cfg.web_search_endpoint)
         cfg.research_enabled = data.get("research_enabled", cfg.research_enabled)
         cfg.research_max_topics = data.get("research_max_topics", cfg.research_max_topics)
+        cfg.trending_enabled = data.get("trending_enabled", cfg.trending_enabled)
         cfg.api_key = data.get("api_key", cfg.api_key)
 
         if "knowledge_dir" in data:

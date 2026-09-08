@@ -12,7 +12,7 @@ from pathlib import Path
 
 # 让 tests/ 能 import 项目根模块
 
-from agents.text_cleaner import clean_chapter_body, strip_existing_title
+from agents.tools.text_cleaner import clean_chapter_body, strip_existing_title
 
 
 # ── clean_chapter_body ───────────────────────────────────────

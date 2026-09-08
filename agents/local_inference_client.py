@@ -63,7 +63,7 @@ class LocalInferenceClient:
         Returns:
             LocalInferenceClient 实例
         """
-        from agents.style_polisher import STYLE_REGISTRY
+        from agents.tools.style_polisher import STYLE_REGISTRY
 
         config = STYLE_REGISTRY.get(style)
         if not config:

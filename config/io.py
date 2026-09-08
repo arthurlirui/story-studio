@@ -28,11 +28,11 @@ _WRITABLE_SCALARS: set[str] = {
     "max_rounds", "scene_writers", "max_context_chars", "batch_size",
     "merge_gate_rounds", "rate_limit_delay",
     "web_search_provider", "web_search_endpoint",
-    "research_enabled", "research_max_topics",
+    "research_enabled", "research_max_topics", "trending_enabled",
 }
 
 # 允许写入的顶层键（标量 + 特殊 dict/嵌套结构）。
-ALLOWED_KEYS: set[str] = _WRITABLE_SCALARS | {"agent_models", "multi_polish"}
+ALLOWED_KEYS: set[str] = _WRITABLE_SCALARS | {"agent_models", "multi_polish", "deai"}
 
 
 def default_config_path() -> Path:
@@ -127,6 +127,17 @@ def apply_update(data: dict, patch: dict) -> tuple[list[str], dict[str, str]]:
                 existing[mk] = mv
             data["multi_polish"] = existing
             updated.append("multi_polish")
+            continue
+
+        if key == "deai" and isinstance(value, dict):
+            existing = data.get("deai", {})
+            if not isinstance(existing, dict):
+                existing = {}
+            # 单字段更新（enabled/aggressiveness/length_*/polish_max_attempts/prompt_version/audit_threshold）
+            for dk, dv in value.items():
+                existing[dk] = coerce_value(dv) if not isinstance(dv, dict) else dv
+            data["deai"] = existing
+            updated.append("deai")
             continue
 
         if key == "agent_models" and isinstance(value, dict):

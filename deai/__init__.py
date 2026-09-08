@@ -10,7 +10,15 @@ deai — 去AI化模块。
   写作纪律 + Editor 的 8 维度检测清单），在每章写作/润色/终审的逐轮修订中
   自动执行，无需显式调用本模块。
 - 双轨互补：prompt 内化侧重"生成时预防"，引擎侧重"生成后清理"。
-  未来可将 engine.process() 接入 orchestrator 的终审阶段作为兜底清洗。
+
+接入点：
+- deai stage（pipeline_core.run_deai / run_all.run_deai / short_story._phase_deai）
+  先跑 engine.process() 规则清洗+LLM重写，再叠 polish_prompt 润色。
+- 终审阶段（orchestrator.phase_complete）每轮跑 audit()，评分低于
+  cfg.deai.audit_threshold 时触发一轮 process() 重写，由 showrunner 复审。
+
+参数化：aggressiveness / length_band / prompt_version / audit_threshold
+均通过 config.DeaiConfig 接入 settings.yaml。
 """
 
 from .engine import DeaiEngine

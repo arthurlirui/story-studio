@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agents.web_search import SearchResult
+from agents.tools.web_search import SearchResult
 from config import StudioConfig
 from orchestrator import StoryOrchestrator
 

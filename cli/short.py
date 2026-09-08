@@ -54,6 +54,7 @@ def short_generate(
                 skill_store=skill_store,
                 knowledge_dir=output_dir,
                 output_dir=output_dir,
+                cfg=cfg,
             )
 
             console.print(f"[cyan]📝 生成短篇: genre={genre} words={words} deai={'off' if no_deai else 'on'}[/cyan]")

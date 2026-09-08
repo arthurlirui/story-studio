@@ -64,7 +64,7 @@ async def search_hot_topics() -> list[dict]:
     # M6 修复：sys.path insert 幂等，避免多次调用时重复插入
     if str(WORKSPACE.parent) not in sys.path:
         sys.path.insert(0, str(WORKSPACE.parent))
-    from agents.web_search import BochaSearchProvider
+    from agents.tools.web_search import BochaSearchProvider
 
     provider = BochaSearchProvider(BOCHA_API_KEY)
     all_results: list[dict] = []

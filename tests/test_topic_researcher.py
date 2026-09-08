@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from agents.innovator import Innovator
+from agents.research.innovator import Innovator
 from agents.knowledge import KnowledgeStore
-from agents.topic_researcher import DEFAULT_TOPICS, TopicResearcher
-from agents.web_search import SearchResult
+from agents.research.topic_researcher import DEFAULT_TOPICS, TopicResearcher
+from agents.tools.web_search import SearchResult
 
 
 def _run(coro):
@@ -149,7 +149,7 @@ class TestTopicResearcher:
         self, store: KnowledgeStore,
     ):
         """web_search.search 抛异常时 research 不应中断，应继续处理后续 topic。"""
-        from agents.topic_researcher import TopicResearcher
+        from agents.research.topic_researcher import TopicResearcher
 
         client = FakeClient(responses=["## 报告\n内容"])
         researcher = TopicResearcher(

@@ -50,7 +50,7 @@ def export_final(
     merged = "\n\n---\n\n".join(parts)
     # txt 格式去掉 markdown 标记
     if fmt == "txt":
-        from agents.text_cleaner import clean_chapter_body
+        from agents.tools.text_cleaner import clean_chapter_body
         merged = "\n\n---\n\n".join(clean_chapter_body(p) for p in parts)
 
     if out:

@@ -61,17 +61,31 @@ api/
 | POST | `/novels/{id}/run-all` | 执行所有任务 |
 | POST | `/novels/{id}/resume` | 断点恢复 |
 
-### Knowledge（知识库读取）
+### Knowledge（知识库读取 + 大纲编辑）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/novels/{id}/chapters` | 章节列表（号/标题/字数/去AI分/verdict） |
+| GET | `/novels/{id}/chapters/{n}` | 读取章节正文 |
+| PUT | `/novels/{id}/chapters/{n}` | 保存章节编辑（body: `{content}`） |
 | GET | `/novels/{id}/knowledge/{tree}` | 知识库子树文件列表（world/characters/story/research） |
 | GET | `/novels/{id}/cost` | RunState.cost 汇总（per-model token 桶） |
 | GET | `/novels/{id}/quality` | 去AI化质量仪表盘数据 |
-| GET | `/novels/{id}/outline` | 大纲全文 |
+| GET | `/novels/{id}/outline` | 大纲全文（Markdown） |
+| GET | `/novels/{id}/outline/structured` | 大纲结构化 JSON（书名/设计说明/逐章五要素） |
+| PUT | `/novels/{id}/outline` | 保存大纲（body: `{structured}` 或 `{outline}`，自动同步 run_state 总章节数） |
 | GET | `/novels/{id}/world` | 世界观文档列表 + 汇总 |
 | GET | `/novels/{id}/characters` | 角色档案列表 + 预览 |
+
+### Config（全局配置读写）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/config` | 读取全量配置（敏感字段脱敏：`llm_api_key`/`web_search_api_key`/`api_key`） |
+| PUT | `/config` | 部分更新配置（body: JSON patch 对象，白名单校验，写回 settings.yaml 后热重载 JobRunner） |
+| GET | `/config/paths` | 配置文件路径与 jobs 目录（只读信息） |
+
+**PUT /config 白名单**：`backend` / `llm_base_url` / `main_model` / `light_model` / `ollama_host` / `max_rounds` / `scene_writers` / `batch_size` / `max_context_chars` / `merge_gate_rounds` / `rate_limit_delay` / `web_search_provider` / `web_search_endpoint` / `research_enabled` / `research_max_topics` / `trending_enabled` / `multi_polish`（dict 递归合并）/ `deai`（dict 递归合并）/ `agent_models`（整体替换）。敏感字段与只读字段（路径）拒绝写入。
 
 ### Series & Genres（只读）
 
