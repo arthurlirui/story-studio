@@ -1,6 +1,6 @@
 [project]
 name = "story-studio"
-version = "1.0.0"
+version = "2.0.0"
 description = "多 Agent 协作的小说剧本创作平台（LLM API 驱动）"
 requires-python = ">=3.11"
 dependencies = [

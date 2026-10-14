@@ -17,3 +17,4 @@ web_search_api_key: ''
 web_search_endpoint: ''
 research_enabled: false
 research_max_topics: 4
+trending_enabled: true

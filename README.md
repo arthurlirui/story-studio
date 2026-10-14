@@ -56,7 +56,7 @@ python main.py                              # = ss repl
 python main.py --new "写一个赛博朋克侦探故事"  # 旧式 flag 仍可用
 ```
 
-详见 [docs/CLI.md](docs/CLI.md) 和 [docs/API.md](docs/API.md)。
+详见 [**文档中心**](docs/INDEX.md) · [CLI.md](docs/CLI.md) · [API.md](docs/API.md) · [架构设计](docs/architecture.md) · [变更日志](docs/CHANGELOG.md)。
 
 ---
 
@@ -336,7 +336,15 @@ story-studio/
 ├── short_story/          # 📖 短篇生成引擎
 ├── daily_novels/         # 📅 日常批量生成 pipeline
 ├── main.py               # 🚀 兼容入口（委托 cli.main:app）
-├── docs/                 # 📖 CLI.md + API.md 文档
+├── docs/                 # 📖 文档中心（INDEX + 架构 + 模块手册 + CLI + API + CHANGELOG + VERSIONING + CONTRIBUTING）
+│   ├── INDEX.md          #    文档导航中心
+│   ├── architecture.md   #    系统架构设计
+│   ├── modules/          #    8 个模块文档（core/agents/deai/api/cli/frontend/short_story/infra）
+│   ├── CLI.md            #    CLI 命令手册
+│   ├── API.md            #    REST API 手册
+│   ├── CHANGELOG.md      #    版本变更日志
+│   ├── VERSIONING.md     #    版本管理策略
+│   └── CONTRIBUTING.md   #    贡献指南
 ├── pyproject.toml        # 📦 项目元数据 + [project.scripts] ss
 └── ARCHITECTURE.md       # 📐 架构设计
 ```
